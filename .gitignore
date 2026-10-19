@@ -24,6 +24,7 @@ build
 frontweb-edu
 .superpowers
 .worktrees
+.idea
 build_edu
 node_modules
 ohos_hap
