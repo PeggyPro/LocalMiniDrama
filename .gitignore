@@ -25,6 +25,9 @@ frontweb-edu
 .superpowers
 .worktrees
 .idea
+pyproject.toml
+backend-node/pnpm-workspace.yaml
+backend-node/pnpm-lock.yaml
 build_edu
 node_modules
 ohos_hap
