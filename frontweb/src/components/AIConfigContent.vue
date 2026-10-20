@@ -84,6 +84,14 @@
                 {{ row.default_model || (Array.isArray(row.model) && row.model[0]) || '—' }}
               </template>
             </el-table-column>
+            <el-table-column label="推理强度" min-width="120">
+              <template #default="{ row }">
+                <el-tag v-if="row.service_type === 'text'" size="small" :type="getReasoningSummary(row).effort ? 'primary' : 'info'">
+                  {{ getReasoningSummary(row).effort || getReasoningSummary(row).label }}
+                </el-tag>
+                <span v-else class="no-default">—</span>
+              </template>
+            </el-table-column>
             <el-table-column prop="service_type" label="类型" width="148">
               <template #default="{ row }">
                 <span :class="['type-badge', 'type-' + row.service_type]">
@@ -210,6 +218,9 @@
       v-model="dialogVisible"
       :title="vendorLock.enabled ? '修改 API Key / 默认模型' : (editingId ? '编辑配置' : '添加配置')"
       width="520px"
+      class="ai-service-config-dialog"
+      top="5vh"
+      append-to-body
       :close-on-click-modal="false"
       @closed="resetForm"
     >
@@ -843,6 +854,30 @@ input_reference = (图片文件，可选)</pre>
           </el-select>
           <p class="field-tip">该配置被选为「默认」时，生成故事/图片/视频将使用此处指定的模型。</p>
         </el-form-item>
+        <template v-if="form.service_type === 'text' && !isDeepSeekOfficialForm">
+          <el-form-item label="推理强度列表">
+            <div class="model-row">
+              <el-select
+                v-model="presetReasoningEffortPick"
+                placeholder="追加预设强度"
+                clearable
+                style="width: 220px; margin-bottom: 8px"
+                @change="onPresetReasoningEffortSelect"
+              >
+                <el-option v-for="option in REASONING_EFFORT_PRESETS" :key="option.value" :label="option.label" :value="option.value" />
+              </el-select>
+            </div>
+            <el-input v-model="form.reasoningEffortText" type="textarea" :rows="2" placeholder="low, medium, high, xhigh；多个用逗号或换行分隔" />
+            <p class="field-tip">填写当前模型或接口支持的强度，可追加预设值或自定义。</p>
+          </el-form-item>
+          <el-form-item label="默认推理强度">
+            <el-select v-model="form.defaultReasoningEffort" clearable placeholder="模型默认（不指定强度）" style="width: 100%">
+              <el-option label="模型默认（不指定强度）" value="" />
+              <el-option v-for="effort in formReasoningEfforts" :key="effort" :label="getReasoningLabel(effort)" :value="effort" />
+            </el-select>
+            <p class="field-tip">该配置的文本生成和业务场景会自动使用此强度。</p>
+          </el-form-item>
+        </template>
         <el-form-item v-if="isDeepSeekOfficialForm">
           <template #label>
             <span class="form-label-tip">思考模式
@@ -1198,6 +1233,10 @@ import { aiAPI } from '@/api/ai'
 import { generationSettingsAPI } from '@/api/prompts'
 import PromptEditor from '@/components/PromptEditor.vue'
 import SceneModelMap from '@/components/SceneModelMap.vue'
+import {
+  DEFAULT_REASONING_EFFORTS, REASONING_EFFORT_PRESETS, parseReasoningEfforts,
+  readReasoningSettings, updateReasoningSettings, getReasoningLabel, getReasoningSummary,
+} from '@/utils/reasoningSettings'
 import Sd2AssetManagement from '@/components/Sd2AssetManagement.vue'
 
 const activeTab = ref('configs')
@@ -1279,6 +1318,8 @@ const form = ref({
   query_endpoint: '',
   modelText: '',
   default_model: '',
+  reasoningEffortText: DEFAULT_REASONING_EFFORTS.join('\n'),
+  defaultReasoningEffort: '',
   deepseek_thinking: 'disabled',
   deepseek_reasoning_effort: 'high',
   priority: 0,
@@ -1294,8 +1335,24 @@ const form = ref({
   group_id: '',
 })
 const presetModelPick = ref('')
+const presetReasoningEffortPick = ref('')
 
 const formModelList = computed(() => parseModelText(form.value.modelText))
+const formReasoningEfforts = computed(() => parseReasoningEfforts(form.value.reasoningEffortText))
+
+watch(formReasoningEfforts, efforts => {
+  if (form.value.defaultReasoningEffort && !efforts.includes(form.value.defaultReasoningEffort)) {
+    form.value.defaultReasoningEffort = ''
+  }
+})
+
+function onPresetReasoningEffortSelect(value) {
+  if (!value) return
+  const efforts = parseReasoningEfforts(form.value.reasoningEffortText)
+  if (!efforts.includes(value)) efforts.push(value)
+  form.value.reasoningEffortText = efforts.join('\n')
+  presetReasoningEffortPick.value = ''
+}
 
 // 保证「生成时默认使用」下拉有可选且选中值在列表内，否则会不显示或修改无效
 watch(
@@ -1878,6 +1935,7 @@ function parseModelText(text) {
 function resetForm() {
   editingId.value = null
   presetModelPick.value = ''
+  presetReasoningEffortPick.value = ''
   form.value = {
     service_type: 'text',
     name: '',
@@ -1889,6 +1947,8 @@ function resetForm() {
     query_endpoint: '',
     modelText: '',
     default_model: '',
+    reasoningEffortText: DEFAULT_REASONING_EFFORTS.join('\n'),
+    defaultReasoningEffort: '',
     deepseek_thinking: 'disabled',
     deepseek_reasoning_effort: 'high',
     priority: 0,
@@ -1921,6 +1981,7 @@ function openEdit(row) {
   let kling_secret_key_base64 = false
   let supports_universal_omni = false
   const deepseekSettings = resolveDeepSeekFormSettings(row)
+  const reasoningSettings = readReasoningSettings(row.settings)
   if (row.settings) {
     try {
       const s = JSON.parse(row.settings)
@@ -1954,6 +2015,8 @@ function openEdit(row) {
     query_endpoint: row.query_endpoint || '',
     modelText: modelList.join('\n'),
     default_model: defaultInList ? row.default_model : (modelList[0] || ''),
+    reasoningEffortText: reasoningSettings.efforts.join('\n'),
+    defaultReasoningEffort: reasoningSettings.effort,
     deepseek_thinking: deepseekSettings.thinking,
     deepseek_reasoning_effort: deepseekSettings.effort,
     priority: row.priority ?? 0,
@@ -2007,14 +2070,18 @@ async function submit() {
       if (form.value.supports_universal_omni) baseS.supports_universal_omni = true
       else delete baseS.supports_universal_omni
       settings = Object.keys(baseS).length ? JSON.stringify(baseS) : null
-    } else if (isDeepSeekOfficialForm.value) {
+    } else if (form.value.service_type === 'text') {
       const prev = editingId.value ? list.value.find((r) => r.id === editingId.value) : null
-      const baseS = parseSettings(prev?.settings)
-      baseS.deepseek_thinking = form.value.deepseek_thinking === 'enabled' ? 'enabled' : 'disabled'
-      if (baseS.deepseek_thinking === 'enabled') {
-        baseS.deepseek_reasoning_effort = form.value.deepseek_reasoning_effort === 'max' ? 'max' : 'high'
+      let baseS = { ...parseSettings(prev?.settings) }
+      if (isDeepSeekOfficialForm.value) {
+        baseS.deepseek_thinking = form.value.deepseek_thinking === 'enabled' ? 'enabled' : 'disabled'
+        if (baseS.deepseek_thinking === 'enabled') {
+          baseS.deepseek_reasoning_effort = form.value.deepseek_reasoning_effort === 'max' ? 'max' : 'high'
+        } else {
+          delete baseS.deepseek_reasoning_effort
+        }
       } else {
-        delete baseS.deepseek_reasoning_effort
+        baseS = updateReasoningSettings(baseS, formReasoningEfforts.value, form.value.defaultReasoningEffort)
       }
       settings = Object.keys(baseS).length ? JSON.stringify(baseS) : null
     }
@@ -2418,6 +2485,15 @@ onMounted(() => {
 </style>
 
 <style scoped>
+:global(.ai-service-config-dialog) {
+  display: flex;
+  flex-direction: column;
+  max-height: 90vh;
+}
+:global(.ai-service-config-dialog .el-dialog__body) {
+  min-height: 0;
+  overflow-y: auto;
+}
 .ai-config-content {
   padding: 0;
 }

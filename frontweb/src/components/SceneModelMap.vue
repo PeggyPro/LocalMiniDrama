@@ -3,7 +3,7 @@
     <div class="page-header">
       <div class="header-left">
         <p class="page-desc">
-          配置不同业务场景使用的 AI 模型路由。当调用 generateText 时传入 scene_key，系统会优先使用此处配置的模型。
+          为不同业务场景选择 AI 配置和模型，推理强度自动沿用该 AI 配置的默认值。
         </p>
       </div>
       <div class="header-right">
@@ -18,7 +18,7 @@
     
     <template v-else>
       <el-table
-        :data="list"
+        :data="displayList"
         stripe
         style="width: 100%"
       >
@@ -49,6 +49,16 @@
             <span v-else class="text-muted">使用配置默认模型</span>
           </template>
         </el-table-column>
+        <el-table-column label="推理强度" min-width="130">
+          <template #default="{ row }">
+            <el-tooltip v-if="row.service_type === 'text'" :content="row.reasoningSource" placement="top">
+              <el-tag :type="row.reasoning.effort ? 'primary' : 'info'" size="small">
+                {{ row.reasoning.effort || row.reasoning.label }}
+              </el-tag>
+            </el-tooltip>
+            <span v-else class="text-muted">—</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="description" label="描述" min-width="200" show-overflow-tooltip />
         <el-table-column label="操作" width="150" fixed="right">
           <template #default="{ row }">
@@ -66,6 +76,7 @@
       v-model="dialogVisible"
       :title="editingKey ? '编辑业务场景映射' : '添加业务场景映射'"
       width="560px"
+      append-to-body
       :close-on-click-modal="false"
       @closed="resetForm"
     >
@@ -139,6 +150,17 @@
             {{ selectedConfigModels.length ? '从该配置的可用模型中选择' : '请先选择 AI 配置' }}
           </p>
         </el-form-item>
+        <el-form-item v-if="form.service_type === 'text'" label="推理强度">
+          <div class="reasoning-card">
+            <div class="reasoning-card-header">
+              <span>{{ selectedConfig ? '来自 ' + selectedConfig.name : '尚未选择可用配置' }}</span>
+              <el-tag size="small" type="info" effect="plain">自动继承</el-tag>
+            </div>
+            <div class="reasoning-card-value">{{ selectedReasoning.label }}</div>
+            <p class="reasoning-card-description">{{ selectedReasoning.description }}</p>
+            <p v-if="selectedConfig" class="reasoning-card-tip">在「AI 配置」中修改默认强度后，此场景自动跟随。</p>
+          </div>
+        </el-form-item>
         <el-form-item prop="description" label="描述">
           <el-input
             v-model="form.description"
@@ -161,12 +183,18 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import { sceneModelMapAPI } from '@/api/sceneModelMap'
 import { aiAPI } from '@/api/ai'
-import { getSelectableModels } from '@/utils/modelSelection'
+import { getSelectableModels, resolveAIConfig } from '@/utils/modelSelection'
+import { getReasoningSummary } from '@/utils/reasoningSettings'
+
+const props = defineProps({
+  aiConfigs: { type: Array, default: null },
+})
 
 const loading = ref(false)
 const saving = ref(false)
 const list = ref([])
-const configs = ref([])
+const loadedConfigs = ref([])
+const configs = computed(() => props.aiConfigs ?? loadedConfigs.value)
 const dialogVisible = ref(false)
 const editingKey = ref(null)
 const formRef = ref(null)
@@ -178,6 +206,18 @@ const form = ref({
   config_id: null,
   model_override: ''
 })
+
+const selectedConfig = computed(() => resolveAIConfig(configs.value, form.value.service_type, form.value.config_id))
+const selectedReasoning = computed(() => getReasoningSummary(selectedConfig.value, form.value.model_override))
+const displayList = computed(() => list.value.map(row => {
+  const config = resolveAIConfig(configs.value, row.service_type, row.config_id)
+  return {
+    ...row,
+    config_name: config?.name || null,
+    reasoning: getReasoningSummary(config, row.model_override),
+    reasoningSource: config ? '继承自 ' + config.name : '尚未配置可用的 AI 服务',
+  }
+}))
 
 const rules = {
   key: [{ required: true, message: '请输入场景键', trigger: 'blur' }],
@@ -211,17 +251,9 @@ const predefinedKeys = [
 ]
 
 // 根据服务类型筛选配置
-const filteredConfigs = computed(() => {
-  const currentServiceType = form.value.service_type
-  console.log('filteredConfigs computed, service_type:', currentServiceType, 'configs:', configs.value.length)
-  const filtered = configs.value.filter(c => {
-    const match = c.service_type === currentServiceType && c.is_active
-    console.log('  config:', c.name, 'service_type:', c.service_type, 'match:', match)
-    return match
-  })
-  console.log('  filtered result:', filtered.length)
-  return filtered
-})
+const filteredConfigs = computed(() => configs.value.filter(config => (
+  config.service_type === form.value.service_type && config.is_active
+)))
 
 // 获取选中配置的可用模型列表
 const selectedConfigModels = computed(() => {
@@ -262,12 +294,9 @@ function getSceneKeyLabel(key) {
 
 // 场景键改变时自动设置服务类型
 function onKeyChange(key) {
-  console.log('onKeyChange called with key:', key)
   const matched = predefinedKeys.find(k => k.value === key)
-  console.log('matched predefined key:', matched)
   if (matched) {
     form.value.service_type = matched.service_type
-    console.log('service_type set to:', form.value.service_type)
   }
   // 重置配置和模型选择
   form.value.config_id = null
@@ -275,7 +304,7 @@ function onKeyChange(key) {
 }
 
 // 配置改变时重置模型选择
-function onConfigChange(configId) {
+function onConfigChange() {
   form.value.model_override = ''
 }
 
@@ -284,19 +313,10 @@ async function load() {
   try {
     const [mapsData, configsData] = await Promise.all([
       sceneModelMapAPI.list(),
-      aiAPI.list()
+      props.aiConfigs === null ? aiAPI.list() : Promise.resolve([])
     ])
-    configs.value = configsData || []
-    console.log('Loaded configs:', configs.value.map(c => ({ id: c.id, name: c.name, service_type: c.service_type, is_active: c.is_active })))
-    
-    // 合并配置名称
-    list.value = (mapsData || []).map(item => {
-      const config = configs.value.find(c => c.id === item.config_id)
-      return {
-        ...item,
-        config_name: config?.name || null
-      }
-    })
+    loadedConfigs.value = configsData || []
+    list.value = mapsData || []
   } catch (err) {
     ElMessage.error('加载场景模型映射失败: ' + (err.message || '未知错误'))
   } finally {
@@ -433,6 +453,42 @@ onMounted(() => {
 .text-muted {
   color: #999;
   font-size: 13px;
+}
+
+.reasoning-card {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--el-color-primary-light-7);
+  border-radius: 10px;
+  background: var(--el-color-primary-light-9);
+  line-height: 1.5;
+}
+
+.reasoning-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.reasoning-card-value {
+  margin-top: 10px;
+  color: var(--el-color-primary);
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.reasoning-card-description,
+.reasoning-card-tip {
+  margin: 4px 0 0;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.reasoning-card-tip {
+  margin-top: 8px;
 }
 
 .field-tip {
