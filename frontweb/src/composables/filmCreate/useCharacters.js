@@ -332,38 +332,43 @@ export function useCharacters(deps) {
     }
   }
 
-  async function onGenerateCharacterImage(char) {
+  async function onGenerateCharacterImage(char, options = {}) {
+    const meta = buildCharImageMeta(char)
+    if (generatingCharIds.has(char.id) || genStore.isRunning(meta)) return { status: 'skipped' }
     char.errorMsg = ''
     char.error_msg = ''
-    const meta = buildCharImageMeta(char)
     generatingCharIds.add(char.id)
     genStore.markRunning(meta)
     try {
-      const res = await characterAPI.generateImage(char.id, undefined, getSelectedStyle())
+      const res = await characterAPI.generateImage(char.id, undefined, options.style ?? getSelectedStyle())
       const taskId = res?.image_generation?.task_id ?? res?.task_id
       if (taskId) {
-        const pollRes = await pollTask(taskId, () => loadDrama(), meta)
-        if (pollRes?.status === 'failed') {
-          char.errorMsg = pollRes.error || '生成失败'
-        } else {
-          ElMessage.success('角色图片已生成')
+        const pollRes = await pollTask(taskId, () => loadDrama(), meta, { silent: options.silent })
+        if (pollRes?.status !== 'completed') {
+          const error = pollRes?.error || '角色图片未生成完成，请稍后重试'
+          char.errorMsg = error
+          return { status: 'failed', error }
         }
       } else {
         await loadDrama()
         await pollUntilResourceHasImage(() => {
-          const list = store.drama?.characters ?? store.currentEpisode?.characters ?? []
+          const episode = store.drama?.episodes?.find((ep) => Number(ep.id) === Number(meta.episodeId))
+          const list = episode?.characters ?? store.drama?.characters ?? store.currentEpisode?.characters ?? []
           const c = list.find((x) => Number(x.id) === Number(char.id))
           return !!(c && (c.image_url || c.local_path))
         })
-        ElMessage.success('角色图片已生成')
       }
+      if (!taskId) genStore.markDone(meta)
+      if (!options.silent) ElMessage.success('角色图片已生成')
+      return { status: 'completed' }
     } catch (e) {
       console.error(e)
       char.errorMsg = e.message || '生成失败'
-      ElMessage.error(e.message || '提交失败')
+      genStore.markFailed(meta, char.errorMsg)
+      if (!options.silent) ElMessage.error(e.message || '提交失败')
+      return { status: 'failed', error: char.errorMsg }
     } finally {
       generatingCharIds.delete(char.id)
-      genStore.markDone(meta)
     }
   }
 

@@ -386,14 +386,14 @@
           <el-button
             type="primary"
             :loading="pipelineRunning && !pipelinePaused"
-            :disabled="!currentEpisodeId || pipelineRunning"
+            :disabled="!currentEpisodeId || pipelineRunning || resourceImageBatchRunning"
             @click="startOneClickPipeline"
           >
             一键成片带图片视频
           </el-button>
           <el-button
             :loading="pipelineRunning && !pipelinePaused"
-            :disabled="!currentEpisodeId || pipelineRunning"
+            :disabled="!currentEpisodeId || pipelineRunning || resourceImageBatchRunning"
             title="仅提取角色、场景、道具与生成分镜文本，不生成图片与视频"
             @click="startTextFrameworkPipeline"
           >
@@ -457,11 +457,16 @@
             </div>
             <div v-show="!charactersBlockCollapsed" class="resource-block-body">
               <div class="asset-actions">
-                <el-button type="primary" size="small" :loading="charactersGenerating" :disabled="!dramaId" @click="onGenerateCharacters">
+                <el-button type="primary" size="small" :loading="charactersGenerating" :disabled="!dramaId || characterImageBatch.running" @click="onGenerateCharacters">
                   剧本自动提取角色
                 </el-button>
                 <el-button size="small" :disabled="!dramaId" @click="openAddCharacter">添加角色</el-button>
                 <el-button size="small" @click="showCharLibrary = true">本剧角色库</el-button>
+                <AssetImageBatchActions
+                  :batch="characterImageBatch"
+                  :disabled="!currentEpisodeId || pipelineRunning || resourceImageBatchRunning || charactersGenerating"
+                  @generate="startAssetImageBatch(characterImageBatch, '角色', $event)"
+                />
               </div>
               <div class="asset-list asset-list-two">
                 <div v-for="char in characters" :key="char.id" class="asset-item asset-item-left-right">
@@ -582,7 +587,7 @@
                       </div>
                     </div>
                     <div class="asset-cover-actions">
-                      <el-button type="primary" size="small" :loading="generatingCharIds.has(char.id)" @click="onGenerateCharacterImage(char)">
+                      <el-button type="primary" size="small" :loading="generatingCharIds.has(char.id)" :disabled="characterImageBatch.running" @click="onGenerateCharacterImage(char)">
                         <el-icon v-if="!generatingCharIds.has(char.id)"><MagicStick /></el-icon>
                         AI 生成
                       </el-button>
@@ -606,9 +611,14 @@
             </div>
             <div v-show="!propsBlockCollapsed" class="resource-block-body">
               <div class="asset-actions">
-                <el-button type="primary" size="small" :loading="propsExtracting" :disabled="!currentEpisodeId" @click="onExtractProps">从剧本提取道具</el-button>
+                <el-button type="primary" size="small" :loading="propsExtracting" :disabled="!currentEpisodeId || propImageBatch.running" @click="onExtractProps">从剧本提取道具</el-button>
                 <el-button size="small" :disabled="!dramaId" @click="showAddProp = true">添加道具</el-button>
                 <el-button size="small" @click="showPropLibrary = true">本剧道具库</el-button>
+                <AssetImageBatchActions
+                  :batch="propImageBatch"
+                  :disabled="!currentEpisodeId || pipelineRunning || resourceImageBatchRunning || propsExtracting"
+                  @generate="startAssetImageBatch(propImageBatch, '道具', $event)"
+                />
               </div>
               <div class="prop-gen-mode" style="margin: 8px 0; font-size: 13px;">
                 <el-checkbox v-model="propUseQuadGrid">生成四视图道具（默认单图，纯色无缝背景）</el-checkbox>
@@ -680,7 +690,7 @@
                     </div>
                     <div class="asset-cover-actions">
                       <el-tooltip :content="propUseQuadGrid ? '四视图道具（前/侧/后/顶，纯色无缝背景）' : '单图道具（纯色无缝背景）'" placement="top">
-                        <el-button type="primary" size="small" :loading="generatingPropIds.has(prop.id)" @click="onGeneratePropImage(prop, propUseQuadGrid)">
+                        <el-button type="primary" size="small" :loading="generatingPropIds.has(prop.id)" :disabled="propImageBatch.running" @click="onGeneratePropImage(prop, propUseQuadGrid)">
                           <el-icon v-if="!generatingPropIds.has(prop.id)"><MagicStick /></el-icon>
                           AI 生成
                         </el-button>
@@ -705,11 +715,16 @@
             </div>
             <div v-show="!scenesBlockCollapsed" class="resource-block-body">
               <div class="asset-actions">
-                <el-button type="primary" size="small" :loading="scenesExtracting" :disabled="!currentEpisodeId" @click="onExtractScenes">
+                <el-button type="primary" size="small" :loading="scenesExtracting" :disabled="!currentEpisodeId || sceneImageBatch.running" @click="onExtractScenes">
                   从剧本提取场景
                 </el-button>
                 <el-button size="small" :disabled="!dramaId" @click="openAddScene">添加场景</el-button>
                 <el-button size="small" @click="showSceneLibrary = true">本剧场景库</el-button>
+                <AssetImageBatchActions
+                  :batch="sceneImageBatch"
+                  :disabled="!currentEpisodeId || pipelineRunning || resourceImageBatchRunning || scenesExtracting"
+                  @generate="startAssetImageBatch(sceneImageBatch, '场景', $event)"
+                />
               </div>
               <div class="scene-gen-mode" style="margin: 8px 0; font-size: 13px;">
                 <el-checkbox v-model="sceneUseQuadGrid">生成四宫格场景（默认单图）</el-checkbox>
@@ -781,7 +796,7 @@
                     </div>
                     <div class="asset-cover-actions">
                       <el-tooltip :content="sceneUseQuadGrid ? '四宫格场景（正/侧/俯/仰）' : '单图场景'" placement="top">
-                        <el-button type="primary" size="small" :loading="generatingSceneIds.has(scene.id)" @click="onGenerateSceneImage(scene, sceneUseQuadGrid)">
+                        <el-button type="primary" size="small" :loading="generatingSceneIds.has(scene.id)" :disabled="sceneImageBatch.running" @click="onGenerateSceneImage(scene, sceneUseQuadGrid)">
                           <el-icon v-if="!generatingSceneIds.has(scene.id)"><MagicStick /></el-icon>
                           AI 生成
                         </el-button>
@@ -2673,6 +2688,8 @@ import { runGenerateStoryFromPremise } from '@/composables/useStoryGeneration'
 import { useCharacters } from '@/composables/filmCreate/useCharacters'
 import { useProps as usePropsComposable } from '@/composables/filmCreate/useProps'
 import { useScenes } from '@/composables/filmCreate/useScenes'
+import { useAssetImageBatch } from '@/composables/filmCreate/useAssetImageBatch'
+import AssetImageBatchActions from '@/components/AssetImageBatchActions.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -2697,7 +2714,10 @@ function goCanvasMode() {
 
 const showAiConfigDialog = ref(false)
 watch(showAiConfigDialog, (open) => {
-  if (!open) invalidateActiveVideoAiConfigCache()
+  if (!open) {
+    invalidateActiveVideoAiConfigCache()
+    loadPipelineConcurrency()
+  }
 })
 const storyInput = ref('')
 const storyStyle = ref('')
@@ -3020,6 +3040,54 @@ const scenesBlockCollapsed = ref(false)
 const sceneUseQuadGrid = ref(false)
 const propUseQuadGrid = ref(false)  // 道具四视图（与场景四宫格同级选项）
 
+const assetImageBatchScope = computed(() =>
+  dramaId.value && currentEpisodeId.value ? `${route.params.id}:${dramaId.value}:${currentEpisodeId.value}` : null
+)
+
+function createResourceImageBatch(items, generatingIds, resourceType, extracting, generate, getOptions = () => ({})) {
+  return useAssetImageBatch({
+    items,
+    hasImage: hasAssetImage,
+    isGenerating: (item) => generatingIds.has(item.id) || genStore.getAllRunningTasks().some((task) =>
+      task.resourceType === resourceType && Number(task.resourceId) === Number(item.id)
+    ),
+    generate,
+    concurrency: pipelineConcurrency,
+    scope: assetImageBatchScope,
+    isBlocked: () => pipelineRunning.value || resourceImageBatchRunning.value || extracting.value,
+    getOptions: () => ({ silent: true, style: getSelectedStyle(), ...getOptions() }),
+  })
+}
+
+const characterImageBatch = createResourceImageBatch(
+  characters, generatingCharIds, GEN_RESOURCE.CHAR_IMAGE, charactersGenerating, onGenerateCharacterImage
+)
+const propImageBatch = createResourceImageBatch(
+  props, generatingPropIds, GEN_RESOURCE.PROP_IMAGE, propsExtracting,
+  (prop, options) => onGeneratePropImage(prop, options.useQuadGrid, options),
+  () => ({ useQuadGrid: propUseQuadGrid.value })
+)
+const sceneImageBatch = createResourceImageBatch(
+  scenes, generatingSceneIds, GEN_RESOURCE.SCENE_IMAGE, scenesExtracting,
+  (scene, options) => onGenerateSceneImage(scene, options.useQuadGrid, options),
+  () => ({ useQuadGrid: sceneUseQuadGrid.value })
+)
+const resourceImageBatches = [
+  { key: 'character', label: '角色', batch: characterImageBatch },
+  { key: 'prop', label: '道具', batch: propImageBatch },
+  { key: 'scene', label: '场景', batch: sceneImageBatch },
+]
+const resourceImageBatchRunning = computed(() => resourceImageBatches.some(({ batch }) => batch.running))
+
+async function startAssetImageBatch(batch, label, mode = 'all') {
+  const result = await batch.start({ regenerateExisting: mode === 'all' })
+  if (!result || result.scopeChanged) return
+  const summary = `${label}图片${result.stopped ? '批量生成已停止' : '批量生成完成'}：成功 ${result.succeeded} 张${result.failed ? `，失败 ${result.failed} 张` : ''}`
+  if (result.failed) ElMessage.warning(summary)
+  else if (result.stopped) ElMessage.info(summary)
+  else ElMessage.success(summary)
+}
+
 // 分镜行内编辑状态（按 storyboard id 存储）
 // navCollapsed/storyboardMenuExpanded/toggleNav → 已移至 useNavigation composable
 
@@ -3132,6 +3200,11 @@ const allActiveTaskItems = computed(() => {
     const suffix = p?.total ? ` ${p.current}/${p.total}` : ''
     addItem({ id: 'batch-video', label: `批量生成分镜视频${suffix}...`, kind: 'batchVideo' })
   }
+  for (const { key, label, batch } of resourceImageBatches) {
+    if (batch.running) {
+      addItem({ id: `asset-batch-${key}`, label: `批量生成${label}图片 ${batch.current}/${batch.total}...`, kind: 'assetImageBatch', batch })
+    }
+  }
   return items
 })
 
@@ -3166,6 +3239,11 @@ async function cancelActiveTask(item) {
     if (item.kind === 'universalOmniPolish') {
       universalOmniPolishAbort.value = true
       ElMessage.success('正在停止润色...')
+      return
+    }
+    if (item.kind === 'assetImageBatch') {
+      item.batch.stop()
+      ElMessage.info('已停止后续生图任务，已提交的任务将继续完成')
       return
     }
     if (item.kind === 'batchImage') {
@@ -7133,11 +7211,13 @@ async function onGenerateVideo() {
 
 /** 无 task_id 时轮询刷新直到资源出现图片或超时（用于角色/道具/场景图生成） */
 async function pollUntilResourceHasImage(checker, maxAttempts = 20, intervalMs = 3000) {
+  if (checker()) return
   for (let i = 0; i < maxAttempts; i++) {
     await new Promise((r) => setTimeout(r, intervalMs))
     await loadDrama()
     if (checker()) return
   }
+  throw new Error('图片生成等待超时，请刷新查看结果或重试')
 }
 
 function resolvePollMeta(meta = {}) {
@@ -7153,8 +7233,8 @@ function resolvePollMeta(meta = {}) {
   }
 }
 
-function pollTask(taskId, onDone, meta = {}) {
-  return genStore.pollTask(taskId, resolvePollMeta(meta), onDone, { ElMessage })
+function pollTask(taskId, onDone, meta = {}, options = {}) {
+  return genStore.pollTask(taskId, resolvePollMeta(meta), onDone, { ElMessage, showErrorToast: !options.silent, showTimeoutToast: !options.silent })
 }
 
 /** 一键生成视频：暂停时等待，返回 { paused: true } 表示被暂停中断 */
@@ -7292,7 +7372,7 @@ async function pipelineWithRetry(stepName, fn, maxRetries = 3) {
 }
 
 async function startOneClickPipeline() {
-  if (!currentEpisodeId.value || pipelineRunning.value) return
+  if (!currentEpisodeId.value || pipelineRunning.value || resourceImageBatchRunning.value) return
   trackFilmCreateAction('one_click_generate_start')
   pipelineErrorLog.value = []
   pipelineCurrentStep.value = ''
@@ -7313,7 +7393,7 @@ async function startOneClickPipeline() {
 }
 
 async function startTextFrameworkPipeline() {
-  if (!currentEpisodeId.value || pipelineRunning.value) return
+  if (!currentEpisodeId.value || pipelineRunning.value || resourceImageBatchRunning.value) return
   pipelineErrorLog.value = []
   pipelineCurrentStep.value = ''
   pipelineStepIndex.value = 0
@@ -7763,7 +7843,7 @@ async function runOneClickPipeline(textOnly = false) {
 }
 
 async function startRepairPipeline() {
-  if (!currentEpisodeId.value || pipelineRunning.value) return
+  if (!currentEpisodeId.value || pipelineRunning.value || resourceImageBatchRunning.value) return
   pipelineErrorLog.value = []
   pipelineCurrentStep.value = ''
   pipelineActiveTasks.clear()

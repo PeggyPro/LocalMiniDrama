@@ -294,38 +294,43 @@ export function useProps(deps) {
     }
   }
 
-  async function onGeneratePropImage(prop, useQuadGrid = false) {
+  async function onGeneratePropImage(prop, useQuadGrid = false, options = {}) {
+    const meta = buildPropImageMeta(prop)
+    if (generatingPropIds.has(prop.id) || genStore.isRunning(meta)) return { status: 'skipped' }
     prop.errorMsg = ''
     prop.error_msg = ''
-    const meta = buildPropImageMeta(prop)
     generatingPropIds.add(prop.id)
     genStore.markRunning(meta)
     try {
-      const res = await propAPI.generateImage(prop.id, undefined, getSelectedStyle(), !!useQuadGrid)
-      const taskId = res?.task_id
+      const res = await propAPI.generateImage(prop.id, undefined, options.style ?? getSelectedStyle(), !!useQuadGrid)
+      const taskId = res?.image_generation?.task_id ?? res?.task_id
       if (taskId) {
-        const pollRes = await pollTask(taskId, () => loadDrama(), meta)
-        if (pollRes?.status === 'failed') {
-          prop.errorMsg = pollRes.error || '生成失败'
-        } else {
-          ElMessage.success('道具图片已生成')
+        const pollRes = await pollTask(taskId, () => loadDrama(), meta, { silent: options.silent })
+        if (pollRes?.status !== 'completed') {
+          const error = pollRes?.error || '道具图片未生成完成，请稍后重试'
+          prop.errorMsg = error
+          return { status: 'failed', error }
         }
       } else {
         await loadDrama()
         await pollUntilResourceHasImage(() => {
-          const list = store.drama?.props ?? store.currentEpisode?.props ?? []
+          const episode = store.drama?.episodes?.find((ep) => Number(ep.id) === Number(meta.episodeId))
+          const list = episode?.props ?? store.drama?.props ?? store.currentEpisode?.props ?? []
           const p = list.find((x) => Number(x.id) === Number(prop.id))
           return !!(p && (p.image_url || p.local_path))
         })
-        ElMessage.success('道具图片已生成')
       }
+      if (!taskId) genStore.markDone(meta)
+      if (!options.silent) ElMessage.success('道具图片已生成')
+      return { status: 'completed' }
     } catch (e) {
       console.error(e)
       prop.errorMsg = e.message || '生成失败'
-      ElMessage.error(e.message || '提交失败')
+      genStore.markFailed(meta, prop.errorMsg)
+      if (!options.silent) ElMessage.error(e.message || '提交失败')
+      return { status: 'failed', error: prop.errorMsg }
     } finally {
       generatingPropIds.delete(prop.id)
-      genStore.markDone(meta)
     }
   }
 
