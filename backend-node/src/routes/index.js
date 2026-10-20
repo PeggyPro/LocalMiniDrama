@@ -221,6 +221,7 @@ function setupRouter(cfg, db, log) {
   r.get('/episodes/:episode_id/download', drama.downloadEpisodeVideo);
 
   // ---------- tasks ----------
+  r.get('/tasks/episode/:episodeId', task.getEpisodeTasks);
   r.get('/tasks/:task_id', task.getTaskStatus);
   r.post('/tasks/:task_id/cancel', task.cancelTaskStatus);
   r.get('/tasks', task.getResourceTasks);

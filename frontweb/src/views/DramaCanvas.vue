@@ -52,6 +52,13 @@
             <el-icon><List /></el-icon>
             列表模式
           </el-button>
+          <EpisodeTaskCenter
+            v-if="drama && filterEpisodeId"
+            :drama-id="dramaId"
+            :episode-id="filterEpisodeId"
+            :episode-number="drama.episodes?.find(ep => Number(ep.id) === Number(filterEpisodeId))?.episode_number"
+            :episode-title="drama.episodes?.find(ep => Number(ep.id) === Number(filterEpisodeId))?.title || ''"
+          />
           <el-button class="btn-theme" @click="toggleTheme">
             <el-icon><Sunny v-if="isDark" /><Moon v-else /></el-icon>
             {{ isDark ? '浅色' : '暗色' }}
@@ -318,6 +325,7 @@ import CanvasContextMenu from '@/components/dramaCanvas/CanvasContextMenu.vue'
 import CanvasAddButtonNode from '@/components/dramaCanvas/CanvasAddButtonNode.vue'
 import CanvasFloatingToolbar from '@/components/dramaCanvas/CanvasFloatingToolbar.vue'
 import CanvasFlowAligner from '@/components/dramaCanvas/CanvasFlowAligner.vue'
+import EpisodeTaskCenter from '@/components/EpisodeTaskCenter.vue'
 
 const route = useRoute()
 const router = useRouter()

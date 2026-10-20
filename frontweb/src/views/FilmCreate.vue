@@ -35,6 +35,13 @@
           画布模式
         </el-button>
         <div class="header-actions">
+          <EpisodeTaskCenter
+            v-if="dramaId && currentEpisodeId"
+            :drama-id="dramaId"
+            :episode-id="currentEpisodeId"
+            :episode-number="currentEpisode?.episode_number"
+            :episode-title="currentEpisode?.title || ''"
+          />
           <el-button class="btn-theme" :title="isDark ? '切换到浅色模式' : '切换到暗色模式'" @click="toggleTheme">
             <el-icon><Sunny v-if="isDark" /><Moon v-else /></el-icon>
             {{ isDark ? '浅色' : '暗色' }}
@@ -2711,6 +2718,7 @@ import { getMissingStoryboardImageSlots, generateMissingStoryboardImages } from 
 import { exportStoryboardSheet } from '@/utils/exportStoryboardSheet'
 import StylePickerButton from '@/components/StylePickerButton.vue'
 import AIConfigContent from '@/components/AIConfigContent.vue'
+import EpisodeTaskCenter from '@/components/EpisodeTaskCenter.vue'
 import AIModelInfoCard from '@/components/AIModelInfoCard.vue'
 import UniversalSegmentOmniAtEditor from '@/components/UniversalSegmentOmniAtEditor.vue'
 import {

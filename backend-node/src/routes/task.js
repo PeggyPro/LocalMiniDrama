@@ -1,5 +1,20 @@
 const taskService = require('../services/taskService');
+const episodeTaskService = require('../services/episodeTaskService');
 const response = require('../response');
+
+function getEpisodeTasks(db, log) {
+  return (req, res) => {
+    try {
+      const result = episodeTaskService.listEpisodeTasks(db, req.params.episodeId, req.query);
+      if (!result) return response.notFound(res, '剧集不存在');
+      response.success(res, result);
+    } catch (err) {
+      if (err.statusCode === 400) return response.badRequest(res, err.message);
+      log.errorw('Get episode tasks failed', { error: err.message, episode_id: req.params.episodeId });
+      response.internalError(res, err.message);
+    }
+  };
+}
 
 function getTaskStatus(db, log) {
   return (req, res) => {
@@ -40,6 +55,7 @@ function cancelTaskStatus(db, log) {
 
 module.exports = function taskRoutes(db, log) {
   return {
+    getEpisodeTasks: getEpisodeTasks(db, log),
     getTaskStatus: getTaskStatus(db, log),
     getResourceTasks: getResourceTasks(db, log),
     cancelTaskStatus: cancelTaskStatus(db, log),
