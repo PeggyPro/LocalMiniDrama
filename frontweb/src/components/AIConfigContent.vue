@@ -19,20 +19,20 @@
                 导入配置
               </el-button>
               <input ref="importFileRef" type="file" accept=".json" style="display:none" @change="importConfigs" />
-              <el-button type="success" plain @click="openOneKeyVolc">
+              <el-button type="success" plain style="display: none" @click="openOneKeyVolc">
                 <el-icon><MagicStick /></el-icon>
                 一键配置火山
               </el-button>
-              <el-button type="success" plain @click="openOneKeyAgnes">
+              <el-button type="success" plain style="display: none" @click="openOneKeyAgnes">
                 <el-icon><MagicStick /></el-icon>
                 一键配置 Agnes
               </el-button>
-              <el-button type="info" plain @click="openOneKeyTongyi">
+              <el-button type="info" plain style="display: none" @click="openOneKeyTongyi">
                 <el-icon><MagicStick /></el-icon>
                 一键配置通义
                 <span class="one-key-not-recommended">不推荐</span>
               </el-button>
-              <el-button type="warning" plain @click="openOneKeyCheapSeedance2">
+              <el-button type="warning" plain style="display: none" @click="openOneKeyCheapSeedance2">
                 <el-icon><MagicStick /></el-icon>
                 一键配置低价 Seedance2
               </el-button>
@@ -67,7 +67,7 @@
               一键换Key
             </el-button>
           </div>
-          <p class="default-tip">每种服务类型仅有一个默认配置：文本用于生成故事；文本生成图片用于角色/场景/道具图；分镜图片生成用于分镜图（支持参考图）；视频用于生成视频；语音合成 TTS 用于分镜配音；即梦2角色认证用于创作页 SD2 认证（网关 Token）；SD2 资产库用于官方 ModelArk 私有资产（在未配置即梦2角色认证时供 SD2 认证使用）。</p>
+          <p class="default-tip" style="display: none">每种服务类型仅有一个默认配置：文本用于生成故事；文本生成图片用于角色/场景/道具图；分镜图片生成用于分镜图（支持参考图）；视频用于生成视频；语音合成 TTS 用于分镜配音；即梦2角色认证用于创作页 SD2 认证（网关 Token）；SD2 资产库用于官方 ModelArk 私有资产（在未配置即梦2角色认证时供 SD2 认证使用）。</p>
           <el-table
             v-loading="loading"
             :data="list"
