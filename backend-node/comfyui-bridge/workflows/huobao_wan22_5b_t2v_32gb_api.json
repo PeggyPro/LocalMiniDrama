@@ -1,0 +1,164 @@
+{
+  "1": {
+    "inputs": {
+      "unet_name": "wan2.2_ti2v_5B_fp16.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "Wan 2.2 TI2V 5B 扩散模型（官方模型）"
+    }
+  },
+  "2": {
+    "inputs": {
+      "clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+      "type": "wan",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "UMT5 文本编码器（官方 Wan 设置）"
+    }
+  },
+  "3": {
+    "inputs": {
+      "vae_name": "wan2.2_vae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Wan 2.2 VAE（官方模型）"
+    }
+  },
+  "4": {
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "shift": 8
+    },
+    "class_type": "ModelSamplingSD3",
+    "_meta": {
+      "title": "Wan 2.2 模型采样调整"
+    }
+  },
+  "5": {
+    "inputs": {
+      "clip": [
+        "2",
+        0
+      ],
+      "text": "电影感短视频，主体自然运动，镜头稳定，光线连续，细节清晰"
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "正面提示词（Huobao 会自动注入）"
+    }
+  },
+  "6": {
+    "inputs": {
+      "clip": [
+        "2",
+        0
+      ],
+      "text": "静止画面，卡顿，闪烁，过曝，低质量，模糊，字幕，水印，畸形，画面撕裂，突然变形"
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "负面提示词"
+    }
+  },
+  "7": {
+    "inputs": {
+      "vae": [
+        "3",
+        0
+      ],
+      "width": 832,
+      "height": 480,
+      "length": 121,
+      "batch_size": 1
+    },
+    "class_type": "Wan22ImageToVideoLatent",
+    "_meta": {
+      "title": "Wan 2.2 文生视频 latent（832×480，约 5 秒）"
+    }
+  },
+  "8": {
+    "inputs": {
+      "model": [
+        "4",
+        0
+      ],
+      "positive": [
+        "5",
+        0
+      ],
+      "negative": [
+        "6",
+        0
+      ],
+      "latent_image": [
+        "7",
+        0
+      ],
+      "seed": 0,
+      "steps": 30,
+      "cfg": 5,
+      "sampler_name": "uni_pc",
+      "scheduler": "simple",
+      "denoise": 1
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "Wan 2.2 采样（30 步）"
+    }
+  },
+  "9": {
+    "inputs": {
+      "samples": [
+        "8",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "视频帧 VAE 解码"
+    }
+  },
+  "10": {
+    "inputs": {
+      "images": [
+        "9",
+        0
+      ],
+      "fps": 24,
+      "bit_depth": 8,
+      "color_space": "sRGB",
+      "codec": "none"
+    },
+    "class_type": "CreateVideo",
+    "_meta": {
+      "title": "由帧创建视频（24fps）"
+    }
+  },
+  "11": {
+    "inputs": {
+      "video": [
+        "10",
+        0
+      ],
+      "filename_prefix": "video/huobao_wan22_5b_t2v_32gb",
+      "format": "auto",
+      "codec": "auto"
+    },
+    "class_type": "SaveVideo",
+    "_meta": {
+      "title": "保存 MP4/WebM 视频（Huobao 读取 videos 输出）"
+    }
+  }
+}

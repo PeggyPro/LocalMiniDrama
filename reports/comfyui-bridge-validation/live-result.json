@@ -1,0 +1,45 @@
+{
+  "model": "huobao_minimax_h3_reference_turbo_api",
+  "requestedDuration": 0.5,
+  "resolution": "512x288",
+  "seed": 31719,
+  "phase": "completed",
+  "actualGenerationCalls": 1,
+  "inputs": {
+    "independentReferenceSHA256": "c459a200549333e28bf48822088eed66d9359b9fb768354f97b8f77763332f99",
+    "firstAndLastSHA256": "87ead1993a6f5b823f09f5c0fa91bbc542f2897ccdbd3c43974a2f039242318e",
+    "independentReferences": 1,
+    "explicitFirstFrame": true,
+    "explicitLastFrame": true
+  },
+  "startedAt": "2026-10-20T13:52:48.091Z",
+  "taskId": "lmd-comfy-3eb46478ed1d517bd4447d84b4504928",
+  "nativePromptId": "fa3721f3-65e0-41a3-8284-ae2f27d36eec",
+  "lastStatus": "completed",
+  "metadata": {
+    "width": 512,
+    "height": 288,
+    "fps": 24,
+    "frame_count": 22,
+    "requested_duration": 0.5,
+    "seed": 31719
+  },
+  "completedAt": "2026-10-20T14:01:07.874Z",
+  "elapsedSeconds": 499.783,
+  "videoBytes": 118934,
+  "videoSHA256": "32df74c48a2b6b8d1a4de70da904a66b11877ad45f5c8517f6f34061d59f3dda",
+  "nativeOutput": {
+    "filename": "clip_00001_.mp4",
+    "subfolder": "video/localminidrama/lmd-comfy-3eb46478ed1d517bd4447d84b4504928",
+    "type": "output",
+    "metadata": {
+      "kind": "video",
+      "width": 512,
+      "height": 288,
+      "duration": 0.9166666666666666,
+      "fps": 24,
+      "frame_count": 22
+    }
+  },
+  "videoFile": "reports/comfyui-bridge-validation/test-video.mp4"
+}
