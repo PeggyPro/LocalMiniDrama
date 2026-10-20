@@ -10,7 +10,7 @@
     "base_url": {
       "type": "string",
       "description": "LocalMiniDrama 后端地址",
-      "default": "http://localhost:5679"
+      "default": "http://localhost:5680"
     },
     "default_aspect_ratio": {
       "type": "string",

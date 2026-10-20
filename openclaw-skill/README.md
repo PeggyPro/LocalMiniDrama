@@ -26,13 +26,13 @@ skillhub publish ./openclaw-skill
 ### 云服务器用户
 
 ```bash
-openclaw skill config local-mini-drama --set base_url=http://你的服务器IP:5679
+openclaw skill config local-mini-drama --set base_url=http://你的服务器IP:5680
 ```
 
 ### 本地电脑用户（需内网穿透）
 
 ```bash
-# 假设你用 cpolar 绑定了 localhost:5679
+# 假设你用 cpolar 绑定了 localhost:5680
 openclaw skill config local-mini-drama --set base_url=https://xxx.cpolar.io
 ```
 

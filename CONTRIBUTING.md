@@ -85,7 +85,7 @@ npm install
 cp configs/config.example.yaml configs/config.yaml
 # 编辑 config.yaml，填入你的 AI API 配置
 npm run migrate   # 首次运行，初始化数据库
-npm start         # 默认端口 5679
+npm start         # 默认端口 5680
 ```
 
 ### 启动前端

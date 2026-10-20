@@ -14,13 +14,13 @@ export default defineConfig({
     port: 3013,
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:5679',
+        target: 'http://127.0.0.1:5680',
         changeOrigin: true,
         proxyTimeout: 600000,
         timeout: 600000
       },
       '/static': {
-        target: 'http://127.0.0.1:5679',
+        target: 'http://127.0.0.1:5680',
         changeOrigin: true
       }
     }

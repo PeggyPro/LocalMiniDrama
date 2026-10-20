@@ -1,4 +1,4 @@
-﻿---
+---
 name: local-mini-drama
 version: 1.1.0
 description: LocalMiniDrama 本地短剧助手 — 通过自然语言控制短剧项目全流程：创建剧本、生成角色/场景/道具、生成分镜、批量出图、出视频、合成完整剧集、支持小说导入和工程导入导出
@@ -6,8 +6,8 @@ trigger: "生成短剧|创建短剧|制作短剧|短剧创作|生成分镜|生�
 config:
   base_url:
     type: string
-    description: LocalMiniDrama 后端地址，如 http://localhost:5679 或 http://你的服务器IP:5679
-    default: "http://localhost:5679"
+    description: LocalMiniDrama 后端地址，如 http://localhost:5680 或 http://你的服务器IP:5680
+    default: "http://localhost:5680"
   default_aspect_ratio:
     type: string
     description: 默认画面比例
@@ -48,7 +48,7 @@ homepage: https://github.com/xuanyustudio/LocalMiniDrama
 ### 1. 获取后端地址
 
 ```js
-const baseUrl = config.base_url || "http://localhost:5679";
+const baseUrl = config.base_url || "http://localhost:5680";
 ```
 
 ### 2. 列出已有项目（判断是否需要新建）

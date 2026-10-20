@@ -109,7 +109,7 @@ Double-click → open **AI Config** → enter your API key → start creating.
 git clone https://github.com/your-username/LocalMiniDrama.git
 cd LocalMiniDrama
 
-# 2. Backend (port 5679)
+# 2. Backend (port 5680)
 cd backend-node
 npm install
 cp configs/config.example.yaml configs/config.yaml

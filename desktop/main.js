@@ -44,7 +44,7 @@ writeMainLog(`main.js loaded packaged=${app.isPackaged} exec=${process.execPath}
 
 const BACKEND_APP_PATH = path.join(__dirname, 'backend-app');
 const BACKEND_NODE_PATH = path.join(__dirname, '..', 'backend-node');
-const DEFAULT_PORT = 5679;
+const DEFAULT_PORT = 5680;
 
 let serverInstance = null;
 

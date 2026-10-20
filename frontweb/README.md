@@ -21,14 +21,14 @@
 # 安装依赖
 npm install
 
-# 开发（默认端口 3013，代理到后端 5679）
+# 开发（默认端口 3013，代理到后端 5680）
 npm run dev
 
 # 构建
 npm run build
 ```
 
-请先启动 `backend-node`（如 `http://localhost:5679`），并确保 `vite.config.js` 中 proxy 的 target 与后端一致。
+请先启动 `backend-node`（如 `http://localhost:5680`），并确保 `vite.config.js` 中 proxy 的 target 与后端一致。
 
 ## 技术栈
 

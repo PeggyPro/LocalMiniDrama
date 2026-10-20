@@ -55,7 +55,7 @@ cp configs/config.example.yaml configs/config.yaml
 # 首次运行：初始化数据库表
 npm run migrate
 
-# 生产启动（默认端口 5679）
+# 生产启动（默认端口 5680）
 npm start
 
 # 开发模式（nodemon 热重载）
@@ -64,7 +64,7 @@ npm run dev
 
 启动成功后终端输出：
 ```
-Server started on port 5679
+Server started on port 5680
 ```
 
 ---
@@ -136,7 +136,7 @@ backend-node/
 
 ```yaml
 server:
-  port: 5679                      # HTTP 服务端口
+  port: 5680                      # HTTP 服务端口
 
 database:
   path: ./data/drama_generator.db # SQLite 文件路径

@@ -68,7 +68,7 @@ cp configs/config.example.yaml configs/config.yaml
 # 首次运行：初始化数据库
 npm run migrate
 
-# 启动服务（默认端口 5679）
+# 启动服务（默认端口 5680）
 npm start
 
 # 开发模式（热重载）
@@ -77,7 +77,7 @@ npm run dev
 
 后端启动成功后，终端会输出：
 ```
-Server started on port 5679
+Server started on port 5680
 ```
 
 ---
@@ -92,7 +92,7 @@ cd frontweb
 # 安装依赖
 npm install
 
-# 启动开发服务器（默认端口 3013，自动代理到后端 5679）
+# 启动开发服务器（默认端口 3013，自动代理到后端 5680）
 npm run dev
 ```
 
@@ -114,7 +114,7 @@ run_dev.bat
 .\run_dev.ps1
 ```
 
-脚本会分别在两个窗口中启动后端（端口 5679）和前端（端口 3013），并自动打开浏览器。
+脚本会分别在两个窗口中启动后端（端口 5680）和前端（端口 3013），并自动打开浏览器。
 
 ---
 
@@ -154,7 +154,7 @@ npm run dist:cn
 
 ```yaml
 server:
-  port: 5679          # 后端端口
+  port: 5680          # 后端端口
 
 database:
   path: ./data/drama_generator.db   # SQLite 数据库路径
@@ -202,8 +202,8 @@ npm install
 
 ### Q: 前端报错 `Failed to fetch` 或 API 请求 404
 
-确认后端已正常启动（终端显示 `Server started on port 5679`），且前端代理配置指向正确端口。  
-检查 `frontweb/vite.config.js` 中的 `proxy` 配置，确保 target 为 `http://localhost:5679`。
+确认后端已正常启动（终端显示 `Server started on port 5680`），且前端代理配置指向正确端口。  
+检查 `frontweb/vite.config.js` 中的 `proxy` 配置，确保 target 为 `http://localhost:5680`。
 
 ---
 

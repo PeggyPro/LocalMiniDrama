@@ -216,7 +216,7 @@ async function uploadToImageProxy(imageBuffer, mimeType, log, tag) {
 /**
  * 将本地文件路径或 localhost URL 的图片上传到图床，返回公网 URL。
  * - localPath: 相对 storagePath 的路径，如 "images/ig_xxx.jpg"
- * - localhostUrl: 类似 "http://localhost:5679/static/images/ig_xxx.jpg" 的 URL
+ * - localhostUrl: 类似 "http://localhost:5680/static/images/ig_xxx.jpg" 的 URL
  * 两者传其中一个即可；失败返回 null。
  */
 async function uploadLocalImageToProxy(storagePath, localPathOrUrl, log, tag) {

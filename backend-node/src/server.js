@@ -18,7 +18,7 @@ const logger = require('./logger.js');
 
 const path = require('path');
 const { app, config, db } = createApp();
-const port = Number(process.env.PORT) || config.server?.port || 5679;
+const port = Number(process.env.PORT) || config.server?.port || 5680;
 const host = config.server?.host || '0.0.0.0';
 
 let server;

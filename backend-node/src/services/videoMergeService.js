@@ -84,7 +84,7 @@ function getStorageRoot() {
 async function resolveVideoToLocalPath(videoUrl, baseUrl, storageRoot, tempDir, index, log) {
   if (!videoUrl || typeof videoUrl !== 'string') return null;
   const u = videoUrl.trim();
-  // 1) URL 以 baseUrl 开头（如 http://localhost:5679/static）-> 对应 storageRoot 下相对路径
+  // 1) URL 以 baseUrl 开头（如 http://localhost:5680/static）-> 对应 storageRoot 下相对路径
   if (baseUrl && (u.startsWith(baseUrl) || u.startsWith(baseUrl.replace(/\/$/, '')))) {
     const base = baseUrl.replace(/\/$/, '');
     const rel = u.startsWith(base + '/') ? u.slice(base.length + 1) : u.slice(base.length).replace(/^\//, '');

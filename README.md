@@ -193,7 +193,7 @@
 git clone https://github.com/xuanyustudio/LocalMiniDrama.git
 cd LocalMiniDrama
 
-# 后端（端口 5679）
+# 后端（端口 5680）
 cd backend-node && npm install
 cp configs/config.example.yaml configs/config.yaml   # 填入 API Key
 npm run migrate && npm start

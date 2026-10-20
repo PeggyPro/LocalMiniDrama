@@ -1,11 +1,11 @@
 @echo off
 set ROOT=%~dp0
 
-echo [0/2] Checking port 5679...
+echo [0/2] Checking port 5680...
 netstat -ano > "%TEMP%\lmd_netstat.txt" 2>&1
-findstr ":5679 " "%TEMP%\lmd_netstat.txt" | findstr "LISTENING" > "%TEMP%\lmd_port.txt" 2>&1
+findstr ":5680 " "%TEMP%\lmd_netstat.txt" | findstr "LISTENING" > "%TEMP%\lmd_port.txt" 2>&1
 for /f "tokens=5" %%a in (%TEMP%\lmd_port.txt) do (
-  echo   Killing old process on port 5679 ^(PID %%a^)...
+  echo   Killing old process on port 5680 ^(PID %%a^)...
   taskkill /PID %%a /F >nul 2>&1
 )
 del "%TEMP%\lmd_netstat.txt" >nul 2>&1
