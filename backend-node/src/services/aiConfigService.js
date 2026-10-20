@@ -10,6 +10,7 @@ function normalizeApiKeyForService(serviceType, apiKey) {
   return apiKey;
 }
 const { applyDeepSeekConnectivityOptions } = require('./deepseekConfig');
+const { applyReasoningEffort } = require('./reasoningEffort');
 const { flattenModelIds, pickModelId, remapArkModelId, remapArkModelList, isOfficialArkBase } = require('./modelId');
 function modelToDb(model) {
   if (model == null) return null;
@@ -448,10 +449,8 @@ async function testConnection(opts) {
   if (isOfficialArkBase(base) && (/^deepseek-v4/i.test(body.model) || /^doubao-seed-2/i.test(body.model))) {
     body.thinking = { type: 'disabled' };
   }
-  body = applyDeepSeekConnectivityOptions(
-    { provider, base_url: base, settings: opts.settings },
-    body
-  );
+  const textConfig = { provider, base_url: base, settings: opts.settings };
+  body = applyDeepSeekConnectivityOptions(textConfig, applyReasoningEffort(textConfig, body));
   console.log('[testConnection] 文本/chat 服务', { url, serviceType, model });
   const res = await fetch(url, {
     method: 'POST',

@@ -8,15 +8,17 @@ export function parseModelList(models, defaultModel = '') {
   return defaultModel ? [String(defaultModel).trim()].filter(Boolean) : []
 }
 
-export function getSelectableModels(configs, serviceType, configId) {
-  const list = Array.isArray(configs) ? configs : []
-  const selectedConfig = configId
-    ? list.find((c) => c.id === configId)
-    : null
-  const config = selectedConfig
-    || list.find((c) => c.service_type === serviceType && c.is_active && c.is_default)
-    || list.find((c) => c.service_type === serviceType && c.is_active)
+export function resolveAIConfig(configs, serviceType, configId) {
+  const active = (Array.isArray(configs) ? configs : [])
+    .filter(config => config.service_type === serviceType && config.is_active)
+  return (configId ? active.find(config => String(config.id) === String(configId)) : null)
+    || active.find(config => config.is_default)
+    || active[0]
+    || null
+}
 
+export function getSelectableModels(configs, serviceType, configId) {
+  const config = resolveAIConfig(configs, serviceType, configId)
   if (!config) return []
   return parseModelList(config.model, config.default_model)
 }

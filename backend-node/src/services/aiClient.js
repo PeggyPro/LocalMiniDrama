@@ -1,6 +1,7 @@
 // 与 Go pkg/ai + application/services/ai_service 对齐：读取 ai_service_configs，调用 OpenAI 兼容的 chat completions
 const aiConfigService = require('./aiConfigService');
 const { applyDeepSeekChatOptions } = require('./deepseekConfig');
+const { applyReasoningEffort } = require('./reasoningEffort');
 const { flattenModelIds, pickModelId, remapArkModelId } = require('./modelId');
 const https = require('https');
 const http = require('http');
@@ -453,7 +454,7 @@ async function generateText(db, log, serviceType, userPrompt, systemPrompt, opti
     ...(finalMaxTokens != null ? { max_tokens: finalMaxTokens } : {}),
     ...(json_mode ? { response_format: { type: 'json_object' } } : {}),
   };
-  body = applyVolcChatOptions(config, applyDeepSeekChatOptions(config, body));
+  body = applyVolcChatOptions(config, applyDeepSeekChatOptions(config, applyReasoningEffort(config, body)));
   const startMs = Date.now();
   log.info('AI generateText request', { url: url.slice(0, 60), model, max_tokens: finalMaxTokens ?? '(model default)', json_mode, stream: true });
   const onProgress = (receivedLen, event, accumulated) => {
@@ -559,7 +560,7 @@ async function streamGenerateText(db, log, serviceType, userPrompt, systemPrompt
     ...(finalMaxTokens != null ? { max_tokens: finalMaxTokens } : {}),
     ...(json_mode ? { response_format: { type: 'json_object' } } : {}),
   };
-  body = applyVolcChatOptions(config, applyDeepSeekChatOptions(config, body));
+  body = applyVolcChatOptions(config, applyDeepSeekChatOptions(config, applyReasoningEffort(config, body)));
   const silenceMs = options.silence_timeout_ms != null ? Number(options.silence_timeout_ms) : 120000;
   const startMs = Date.now();
   log.info('AI streamGenerateText request', {
@@ -671,13 +672,14 @@ async function generateTextWithVision(db, log, serviceType, userPrompt, systemPr
   }
 
   // 复用 generateText 的配置查找逻辑
-  const { model: preferredModel, temperature = 0.3, max_tokens = 500 } = options;
-  let config = preferredModel
+  const { model: preferredModel, temperature = 0.3, max_tokens = 500, scene_key = null } = options;
+  const mapped = scene_key ? getConfigFromModelMap(db, scene_key) : null;
+  let config = mapped?.config || (preferredModel
     ? getConfigForModel(db, serviceType, preferredModel)
-    : getDefaultConfig(db, serviceType);
+    : getDefaultConfig(db, serviceType));
   if (!config) config = getDefaultConfig(db, 'text');
   if (!config) throw new Error(`未配置文本模型，请在「AI 配置」中添加 ${serviceType} 类型的配置`);
-  const model = getModelFromConfig(config, preferredModel);
+  const model = getModelFromConfig(config, mapped?.modelOverride || preferredModel);
   const url = buildChatUrl(config);
 
   log.info('[Vision] 开始请求', {
@@ -720,7 +722,7 @@ async function generateTextWithVision(db, log, serviceType, userPrompt, systemPr
     // 推理模型不支持 temperature，跳过
     ...(isReasoningModel ? {} : { temperature: Number(temperature) }),
   };
-  const requestBody = applyVolcChatOptions(config, body);
+  const requestBody = applyVolcChatOptions(config, applyDeepSeekChatOptions(config, applyReasoningEffort(config, body)));
 
   const startMs = Date.now();
   let res;

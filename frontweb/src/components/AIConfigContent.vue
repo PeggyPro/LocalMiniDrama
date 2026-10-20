@@ -123,7 +123,7 @@
       </el-tab-pane>
       <el-tab-pane label="高级设置（业务场景）" name="sceneModelMap">
         <div class="tab-content">
-          <SceneModelMap />
+          <SceneModelMap :ai-configs="list" />
         </div>
       </el-tab-pane>
       <el-tab-pane label="生成设置" name="generation">
