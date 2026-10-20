@@ -61,11 +61,11 @@ function postJSONNonStream(url, headers, body, timeoutMs = 120000) {
 }
 
 /**
- * 图生等长耗时 JSON POST：使用 Node http(s) + 可配置超时（默认 10 分钟），
- * 避免 undici fetch 在慢链路或大包体（多参考图 base64）下长时间挂起后以模糊的 fetch failed 结束。
+ * 图生等长请求原始数据 POST：使用 Node http(s) + 可配置超时（默认 10 分钟）。
+ * 避免 undici fetch 在慢链路或大包体下长时间挂起后以模糊的 fetch failed 结束。
+ * JSON 与 multipart 共用此传输；调用方提供与数据匹配的 Content-Type。
  * @returns {Promise<{ statusCode: number, raw: string }>}
  */
-/** 长请求原始数据 POST；调用方提供与数据匹配的 Content-Type。 */
 function postBodyWithTimeout(url, headers, body, timeoutMs = 600000) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
