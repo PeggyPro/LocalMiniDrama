@@ -502,15 +502,6 @@
                       </el-button>
                       <el-button size="small" :loading="addingCharToMaterialId === char.id" :disabled="!hasAssetImage(char)" @click="onAddCharacterToMaterialLibrary(char)">
                         加入素材库
-                      </el-button><el-button
-                        size="small"
-                        :type="char.seedance2_asset?.status === 'active' ? 'success' : 'warning'"
-                        plain
-                        :loading="sd2CertifyingId === char.id"
-                        :disabled="!hasAssetImage(char)"
-                        @click="onSd2PrimaryAction(char)"
-                      >
-                        {{ sd2ActionLabel(char) }}
                       </el-button>
                     </div>
 
@@ -1870,37 +1861,6 @@
       </template>
     </el-dialog>
 
-    <el-dialog
-      v-model="showCharSd2Cert"
-      title="SD2 认证详情"
-      width="min(720px, 92vw)"
-      destroy-on-close
-      class="sd2-cert-dialog"
-    >
-      <template v-if="charSd2CertPayload">
-        <el-descriptions :column="1" border size="small" class="sd2-cert-desc">
-          <el-descriptions-item label="素材 ID">
-            <span class="sd2-cert-value">{{ charSd2CertPayload.hub_asset_id || '—' }}</span>
-          </el-descriptions-item>
-          <el-descriptions-item label="asset_url">
-            <code class="sd2-cert-value">{{ charSd2CertPayload.asset_url || '—' }}</code>
-          </el-descriptions-item>
-          <el-descriptions-item label="状态">
-            <span class="sd2-cert-value">{{ charSd2CertPayload.status || '—' }}</span>
-          </el-descriptions-item>
-          <el-descriptions-item label="注册图片 URL">
-            <span class="sd2-cert-value">{{ charSd2CertPayload.source_image_url || '—' }}</span>
-          </el-descriptions-item>
-          <el-descriptions-item v-if="charSd2CertPayload.sd2_provider" label="认证提供方">
-            <span class="sd2-cert-value">{{ charSd2CertPayload.sd2_provider }}</span>
-          </el-descriptions-item>
-        </el-descriptions>
-      </template>
-      <template #footer>
-        <el-button @click="showCharSd2Cert = false">关闭</el-button>
-      </template>
-    </el-dialog>
-
     <!-- 编辑道具弹窗 -->
     <el-dialog v-model="showEditProp" :title="editPropForm?.id ? '编辑道具' : '添加道具'" width="75%" @close="onClosePropDialog">
       <el-form v-if="editPropForm" label-width="90px">
@@ -2965,7 +2925,7 @@ async function runConcurrently(items, concurrency, fn, options = {}) {
 const {
   showEditCharacter, editCharacterForm, editCharacterSaving, editCharacterPromptGenerating,
   extractingCharAppearance, extractingAnchors, addCharRefImage, addCharRefFileInput,
-  charactersGenerating, generatingCharIds, sd2CertifyingId, showCharSd2Cert, charSd2CertPayload,
+  charactersGenerating, generatingCharIds,
   sd2VoiceUploadingId,
   showCharLibrary, charLibraryList, charLibraryLoading, charLibraryPage, charLibraryPageSize,
   charLibraryTotal, charLibraryKeyword, charLibraryTab,
@@ -2974,7 +2934,7 @@ const {
   editCharLibrarySaving, addingCharToLibraryId, addingCharToMaterialId, addingCharFromLibraryId,
   charRoleLabel, onGenerateCharacters: onGenerateCharactersRaw, openAddCharacter, stopCharacterPromptPoll, editCharacter,
   saveCharRefImageIfAny, submitEditCharacter, doGenerateCharacterPrompt, doExtractCharFromImage,
-  extractIdentityAnchors, clearCharRefImage, onCloseCharDialog, onDeleteCharacter, onGenerateCharacterImage, onSd2CertifyCharacter, onSd2CertifyRefresh, sd2ActionLabel, onSd2PrimaryAction, openCharSd2CertDialog,
+  extractIdentityAnchors, clearCharRefImage, onCloseCharDialog, onDeleteCharacter, onGenerateCharacterImage,
   onSd2VoicePrimaryAction, onSd2VoiceReplace, sd2VoiceActionLabel, playSd2Voice,
   loadCharLibraryList, debouncedLoadCharLibrary, loadDramaAllCharList, debouncedLoadDramaAllCharList,
   onCharLibraryDialogOpen, onCharLibraryTabChange, isCharAddToEpisodeLoading,
@@ -10792,20 +10752,6 @@ html.light .sb-narration-input :deep(.el-textarea__inner::placeholder) {
 
 /* 公共库弹窗 */
 .library-dialog .el-dialog__body { padding-top: 8px; }
-.sd2-cert-dialog .el-dialog__body { padding-top: 10px; }
-.sd2-cert-desc :deep(.el-descriptions__cell) {
-  white-space: normal;
-  word-break: break-word;
-  overflow-wrap: anywhere;
-}
-.sd2-cert-value {
-  display: inline-block;
-  max-width: 100%;
-  white-space: normal;
-  word-break: break-word;
-  overflow-wrap: anywhere;
-  line-height: 1.5;
-}
 .library-toolbar { margin-bottom: 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .library-team-hint { font-size: 12px; color: var(--el-text-color-secondary); }
 .library-team-hint--warn { color: var(--el-color-warning); }
