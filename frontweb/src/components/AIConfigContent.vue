@@ -232,14 +232,15 @@
           <el-descriptions-item label="厂商">{{ form.provider }}</el-descriptions-item>
         </el-descriptions>
         <el-form ref="formRef" :model="form" label-width="100px">
-          <el-form-item prop="api_key" :rules="[{ required: true, message: '请输入 API Key', trigger: 'blur' }]">
+          <el-form-item prop="api_key" :rules="[{ required: !isNativeComfyUIForm, message: '请输入 API Key', trigger: 'blur' }]">
             <template #label><span class="form-label-tip">API Key</span></template>
             <el-input
               v-model="form.api_key"
               type="password"
-              :placeholder="form.provider === 'jimeng_ai_api' ? '即梦 Session，多个用英文逗号分隔' : '输入你的 API 密钥'"
+              :placeholder="isNativeComfyUIForm ? '可留空；启用鉴权时填写 ComfyUI Token' : (form.provider === 'jimeng_ai_api' ? '即梦 Session，多个用英文逗号分隔' : '输入你的 API 密钥')"
               show-password
             />
+            <p v-if="isNativeComfyUIForm" class="field-tip">{{ comfyUIKeyHint }}</p>
           </el-form-item>
           <el-form-item>
             <template #label><span class="form-label-tip">默认模型</span></template>
@@ -330,7 +331,7 @@
             />
           </el-select>
         </el-form-item>
-        <el-form-item v-if="form.service_type === 'video'">
+        <el-form-item v-if="form.service_type === 'video' && !isNativeComfyUIForm">
           <template #label>
             <span class="form-label-tip">全能多图
               <el-tooltip placement="top" popper-class="cfg-tip-popper">
@@ -349,6 +350,9 @@
             active-text="确认支持全能模式（多图参考）"
             inactive-text="未确认（全能将降级）"
           />
+        </el-form-item>
+        <el-form-item v-if="isNativeComfyUIForm" label="参考图能力">
+          <p class="field-tip">{{ comfyUICapabilityHint }}</p>
         </el-form-item>
         <el-alert
           v-if="form.provider === 'cheap_seedance2'"
@@ -384,6 +388,7 @@
             <el-option label="可灵 Omni-Video（官方 api-beijing / ffir 中转，O1 全能）" value="kling_omni" />
             <el-option label="xAI Grok Imagine（官方 prompt + aspect_ratio，/v1/videos/generations）" value="xai" />
             <el-option label="MiniMax H3（官方 V2：/v2/video_generation，模型 MiniMax-H3）" value="minimax_h3" />
+            <el-option v-if="form.service_type === 'video'" label="ComfyUI 本地（火宝视频工作流，自动桥接）" value="comfyui" />
             <el-option label="NanoBanana" value="nano_banana" />
           </el-select>
         </el-form-item>
@@ -616,9 +621,10 @@ input_reference = (图片文件，可选)</pre>
           <el-input
             v-model="form.api_key"
             type="password"
-            :placeholder="form.service_type === 'jimeng2_character_auth' ? 'Bearer Token' : (form.provider === 'jimeng_ai_api' ? '即梦 Session，多个用英文逗号分隔' : 'API 密钥')"
+            :placeholder="isNativeComfyUIForm ? '可留空；启用鉴权时填写 ComfyUI Token' : (form.service_type === 'jimeng2_character_auth' ? 'Bearer Token' : (form.provider === 'jimeng_ai_api' ? '即梦 Session，多个用英文逗号分隔' : 'API 密钥'))"
             show-password
           />
+          <p v-if="isNativeComfyUIForm" class="field-tip">{{ comfyUIKeyHint }}</p>
         </el-form-item>
         <el-form-item v-if="form.service_type === 'jimeng2_character_auth'">
           <template #label><span class="form-label-tip">素材列表</span></template>
@@ -790,6 +796,7 @@ input_reference = (图片文件，可选)</pre>
             <span>📌 系统将使用以下接口地址</span>
             <span v-if="endpointPreviewInfo.isGemini" class="ep-auto-badge ep-badge-gemini">Gemini 固定模式</span>
             <span v-else-if="endpointPreviewInfo.isJimeng2Auth" class="ep-auto-badge">即梦2角色认证</span>
+            <span v-else-if="endpointPreviewInfo.isComfyUI" class="ep-auto-badge">本地 ComfyUI</span>
             <span v-else-if="endpointPreviewInfo.isAuto && form.service_type !== 'text'" class="ep-auto-badge">自动推断</span>
           </div>
           <div class="ep-row">
@@ -804,6 +811,7 @@ input_reference = (图片文件，可选)</pre>
             ⚠️ Gemini 端点由系统根据模型名固定生成，上方「提交端点」和「查询端点」字段对 Gemini 无效，填了也不生效。
           </p>
           <p v-else-if="endpointPreviewInfo.isJimeng2Auth" class="ep-tip">角色「SD2认证」将调用上述地址注册素材（POST 创建、GET 查询状态）。</p>
+          <p v-else-if="endpointPreviewInfo.isComfyUI" class="ep-tip">本地桥接自动启动，Base URL 保持 ComfyUI 地址；提交端点和查询端点留空即可。</p>
           <p v-else class="ep-tip">以上为系统推断的实际调用地址（可手动填写上方端点字段来覆盖）</p>
         </div>
 
@@ -1238,6 +1246,10 @@ import {
   readReasoningSettings, updateReasoningSettings, getReasoningLabel, getReasoningSummary,
 } from '@/utils/reasoningSettings'
 import Sd2AssetManagement from '@/components/Sd2AssetManagement.vue'
+import {
+  COMFYUI_H3_MODEL, COMFYUI_WAN_MODEL, COMFYUI_VIDEO_PRESET,
+  getComfyUIVideoModel, isNativeComfyUIVideoConfig, buildAIConnectionTestPayload,
+} from '@/utils/comfyUIConfig'
 
 const activeTab = ref('configs')
 const importFileRef = ref(null)
@@ -1338,6 +1350,14 @@ const presetModelPick = ref('')
 const presetReasoningEffortPick = ref('')
 
 const formModelList = computed(() => parseModelText(form.value.modelText))
+const isNativeComfyUIForm = computed(() => isNativeComfyUIVideoConfig(form.value))
+const comfyUIKeyHint = '本地 ComfyUI 未启用鉴权时可留空；启用后填写 ComfyUI Token。'
+const comfyUICapabilityHint = computed(() => {
+  const model = getComfyUIVideoModel(form.value)
+  if (model === COMFYUI_H3_MODEL) return 'H3 支持按顺序传入最多 9 张参考图，并支持首帧和尾帧。'
+  if (model === COMFYUI_WAN_MODEL) return 'Wan 仅支持单张首帧图；参考图可作为首帧，不支持尾帧或多图参考。'
+  return '当前工作流尚未适配，请选择预设的 H3 或 Wan 模型。'
+})
 const formReasoningEfforts = computed(() => parseReasoningEfforts(form.value.reasoningEffortText))
 
 watch(formReasoningEfforts, efforts => {
@@ -1418,6 +1438,7 @@ const rules = computed(() => ({
   api_key: [
     {
       validator: (_rule, v, cb) => {
+        if (isNativeComfyUIForm.value) return cb()
         const st = form.value.service_type
         if (st === 'jimeng2_character_auth') {
           if (v != null && String(v).trim()) return cb()
@@ -1484,6 +1505,7 @@ const providerConfigs = {
     { id: 'agnes', name: 'Agnes AI', models: ['agnes-image-2.5-flash', 'agnes-image-2.1-flash', 'agnes-image-2.0-flash'] }
   ],
   video: [
+    COMFYUI_VIDEO_PRESET,
     {
       id: 'cheap_seedance2',
       name: '低价 Seedance2',
@@ -1538,6 +1560,7 @@ const providerProtocolMap = {
   ffir: 'kling_omni',
   klingai: 'kling_omni',
   // video
+  comfyui: COMFYUI_VIDEO_PRESET.api_protocol,
   vidu: 'vidu',
   xai: 'xai',
   grok: 'xai',
@@ -1557,6 +1580,7 @@ const providerProtocolMap = {
 function getBaseUrlForProvider(provider) {
   if (!provider) return ''
   const p = String(provider).toLowerCase()
+  if (p === 'comfyui') return COMFYUI_VIDEO_PRESET.base_url
   if (p === 'gemini' || p === 'google') return 'https://generativelanguage.googleapis.com'
   if (p === 'minimax_h3') return 'https://api.minimaxi.com'
   if (p === 'minimax') return 'https://api.minimaxi.com/v1'
@@ -1645,6 +1669,16 @@ const endpointPreviewInfo = computed(() => {
   const p = String(provider || '').toLowerCase()
   const proto = api_protocol || providerProtocolMap[p] || ''
   const base = (base_url || '').replace(/\/$/, '')
+
+  if (isNativeComfyUIForm.value) {
+    const root = base || '(请填写 ComfyUI URL)'
+    return {
+      submit: `${root}/prompt`,
+      query: `${root}/history/{promptId}`,
+      isAuto: true,
+      isComfyUI: true,
+    }
+  }
 
   if (service_type === 'jimeng2_character_auth') {
     const root = base || '(请填写网关 URL)'
@@ -1812,6 +1846,10 @@ function onProviderChange(providerId) {
   }
   // 自动填充接口规范
   form.value.api_protocol = providerProtocolMap[providerId] || (st === 'text' ? '' : 'openai')
+  if (st === 'video' && providerId === COMFYUI_VIDEO_PRESET.id) {
+    form.value.endpoint = COMFYUI_VIDEO_PRESET.endpoint
+    form.value.query_endpoint = COMFYUI_VIDEO_PRESET.query_endpoint
+  }
   if (st === 'video' && providerId === 'jimeng_ai_api') {
     form.value.endpoint = ''
     form.value.query_endpoint = ''
@@ -2032,7 +2070,11 @@ function openEdit(row) {
 }
 
 async function submit() {
-  await formRef.value?.validate?.().catch(() => {})
+  try {
+    if (formRef.value && !(await formRef.value.validate())) return
+  } catch (_) {
+    return
+  }
   saving.value = true
   try {
     let modelList = parseModelText(form.value.modelText)
@@ -2199,15 +2241,7 @@ async function openTest(row) {
   testError.value = ''
   testServiceType.value = row.service_type || 'text'
   try {
-    await aiAPI.testConnection({
-      base_url: row.base_url,
-      api_key: row.api_key,
-      model: Array.isArray(row.model) ? row.model[0] : row.model,
-      provider: row.provider,
-      endpoint: row.endpoint,
-      service_type: row.service_type,
-      settings: row.settings
-    })
+    await aiAPI.testConnection(buildAIConnectionTestPayload(row))
     testResult.value = true
   } catch (e) {
     testResult.value = false

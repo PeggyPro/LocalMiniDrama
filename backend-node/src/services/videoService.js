@@ -101,10 +101,41 @@ function resolveVideosDir(storagePath, projectSubdir) {
   return { dir: path.join(storagePath, 'videos'), relPrefix: 'videos' };
 }
 
+/** 只向所选原生 ComfyUI 配置的 /view 端点发送令牌，每次重定向都重新校验。 */
+async function fetchNativeComfyUIVideo(videoUrl, options) {
+  let nativeView = null;
+  try {
+    const base = new URL(String(options.baseUrl || '').trim());
+    if (['http:', 'https:'].includes(base.protocol) && !base.username && !base.password) {
+      nativeView = { origin: base.origin, pathname: base.pathname.replace(/\/+$/, '') + '/view' };
+    }
+  } catch (_) {}
+  const apiKey = options.apiKey != null ? String(options.apiKey).trim() : '';
+  const signal = AbortSignal.timeout(30000);
+  let url = new URL(videoUrl);
+  for (let redirects = 0; redirects <= 5; redirects++) {
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
+      throw new Error('ComfyUI 成片下载地址无效，请检查原生服务地址');
+    }
+    const headers = {};
+    if (apiKey && nativeView && url.origin === nativeView.origin && url.pathname === nativeView.pathname) {
+      headers.Authorization = apiKey.startsWith('Bearer ') ? apiKey : `Bearer ${apiKey}`;
+    }
+    const response = await fetch(url.toString(), { method: 'GET', headers, redirect: 'manual', signal });
+    if (![301, 302, 303, 307, 308].includes(response.status)) return response;
+    const location = response.headers.get('location');
+    await response.body?.cancel();
+    if (!location || redirects === 5) throw new Error('ComfyUI 成片下载重定向无效，请检查原生服务地址');
+    url = new URL(location, url);
+  }
+}
+
 /**
  * 将远程 video_url 下载到本地
  * @param {object} [options]
  * @param {string} [options.apiKey] 需要鉴权下载时传入（如 cheap_seedance2）
+ * @param {boolean} [options.nativeComfyUI] 原生 ComfyUI 使用受限令牌和重定向校验
+ * @param {string} [options.baseUrl] 所选原生 ComfyUI 服务地址
  * @returns {string|null} 相对 storage 根的路径，如 projects/.../videos/vg_1_xxx.mp4；无工程时为 videos/...
  */
 async function downloadVideoToLocal(storagePath, videoUrl, videoGenId, log, projectSubdir = null, options = null) {
@@ -120,18 +151,24 @@ async function downloadVideoToLocal(storagePath, videoUrl, videoGenId, log, proj
     if (apiKey) {
       headers.Authorization = apiKey.startsWith('Bearer ') ? apiKey : `Bearer ${apiKey}`;
     }
-    const res = await fetch(videoUrl, { method: 'GET', headers });
+    const res = options?.nativeComfyUI
+      ? await fetchNativeComfyUIVideo(videoUrl, options)
+      : await fetch(videoUrl, { method: 'GET', headers });
     if (!res.ok) {
       log.warn('Download video failed', { status: res.status, videoGenId, auth: !!apiKey });
       return null;
     }
     const buf = Buffer.from(await res.arrayBuffer());
+    if (options?.nativeComfyUI && !buf.length) throw new Error('ComfyUI 成片为空');
     fs.writeFileSync(filePath, buf);
     const relativePath = `${relPrefix}/${name}`.replace(/\\/g, '/');
     log.info('Video saved to local', { videoGenId, local_path: relativePath, projectSubdir: projectSubdir || '(root)' });
     return relativePath;
   } catch (e) {
-    log.warn('Download video error', { videoGenId, error: e.message });
+    log.warn('Download video error', {
+      videoGenId,
+      error: options?.nativeComfyUI ? 'ComfyUI 成片下载或保存失败，请检查服务连接和本地存储写入权限' : e.message,
+    });
     return null;
   }
 }
@@ -228,10 +265,12 @@ function resolveStoragePath(cfg) {
 async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, videoUrl, logLabel, aiConfig = null) {
   const now = new Date().toISOString();
   let localPath = null;
+  const isNativeConfig = videoClient.isNativeComfyUIConfig(aiConfig, row?.model);
+  const isNativeOutput = isNativeConfig || videoClient.isComfyUITaskId(String(row?.provider_task_id || '').trim());
   const requireAuthDownload = videoClient.isCheapSeedance2Provider(aiConfig?.provider || row?.provider);
-  const downloadOpts = requireAuthDownload && aiConfig?.api_key
-    ? { apiKey: aiConfig.api_key }
-    : null;
+  const downloadOpts = isNativeOutput
+    ? { nativeComfyUI: true, baseUrl: isNativeConfig ? aiConfig?.base_url : null, apiKey: isNativeConfig ? aiConfig?.api_key : null }
+    : (requireAuthDownload && aiConfig?.api_key ? { apiKey: aiConfig.api_key } : null);
   try {
     const cfg = require('../config').loadConfig();
     const storagePath = resolveStoragePath(cfg);
@@ -246,6 +285,14 @@ async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, v
     );
     maybeNormalizeVideoAfterDownload(storagePath, localPath, rowForAspect, videoGenId, log);
   } catch (_) {}
+
+  if (isNativeOutput && !localPath) {
+    const errMsg = 'ComfyUI 成片下载或本地保存失败，请检查原生 ComfyUI 服务地址、访问令牌和本地存储写入权限，再继续查询';
+    log.warn('ComfyUI video download failed', { videoGenId });
+    setVideoGenFailed(db, videoGenId, errMsg, now);
+    if (row.task_id) taskService.updateTaskError(db, row.task_id, errMsg);
+    return { ok: false, error: errMsg };
+  }
 
   // 低价 Seedance2：成片 URL 需鉴权，本地下载失败则不可标为可播成功
   if (requireAuthDownload && !localPath) {
@@ -335,7 +382,7 @@ async function resumePollForVideoGeneration(db, log, videoGenId) {
   const providerTaskId = row.provider_task_id && String(row.provider_task_id).trim();
   if (!providerTaskId) return;
 
-  const config = videoClient.getDefaultVideoConfig(db, row.model);
+  const config = videoClient.getDefaultVideoConfig(db, row.model) || (videoClient.isComfyUITaskId(providerTaskId) ? {} : null);
   if (!config) {
     const now = new Date().toISOString();
     setVideoGenFailed(db, videoGenId, '未配置视频模型', now);
@@ -412,7 +459,7 @@ function resumeFailedVideoPoll(db, log, videoGenId) {
     taskId = task.id;
     db.prepare('UPDATE video_generations SET task_id = ?, updated_at = ? WHERE id = ?').run(taskId, now, id);
   }
-  taskService.updateTaskStatus(db, taskId, 'processing', 10, '继续查询上游任务…');
+  taskService.updateTaskStatus(db, taskId, 'processing', 10, videoClient.isComfyUITaskId(String(row.provider_task_id).trim()) ? '继续查询本地 ComfyUI 任务…' : '继续查询上游任务…');
   try {
     db.prepare('UPDATE async_tasks SET error = NULL WHERE id = ?').run(taskId);
   } catch (_) {}
@@ -494,12 +541,16 @@ async function processVideoGeneration(db, log, videoGenId) {
       if (row.task_id) taskService.updateTaskError(db, row.task_id, '未配置视频模型');
       return;
     }
+    const isLocalComfyUI = videoClient.isNativeComfyUIConfig(config, row.model);
     let reference_urls = null;
     if (row.reference_image_urls) {
       try {
         reference_urls = JSON.parse(row.reference_image_urls);
-        if (!Array.isArray(reference_urls)) reference_urls = null;
-      } catch (_) {}
+        if (!Array.isArray(reference_urls)) throw new Error('invalid reference list');
+      } catch (_) {
+        if (isLocalComfyUI) throw new Error('ComfyUI 参考图列表格式无效，请重新选择并保存参考图片');
+        reference_urls = null;
+      }
     }
     // 优先使用分镜自身的镜头时长（storyboard.duration），其次用 video_generations.duration
     let effectiveDuration = row.duration || null;
@@ -529,13 +580,13 @@ async function processVideoGeneration(db, log, videoGenId) {
     }
     const rowForAspect = { ...row, aspect_ratio: aspectForVideo || row.aspect_ratio };
     const hasOmniRefs = !!(reference_urls && reference_urls.length > 0);
-    if (row.task_id && hasOmniRefs) {
+    if (row.task_id && (hasOmniRefs || isLocalComfyUI)) {
       taskService.updateTaskStatus(
         db,
         row.task_id,
         'processing',
         5,
-        `正在上传 ${reference_urls.length} 张参考图到图床…`
+        isLocalComfyUI ? '正在准备本地 ComfyUI 工作流和图片…' : `正在上传 ${reference_urls.length} 张参考图到图床…`
       );
     }
     const result = await videoClient.callVideoApi(db, log, {
@@ -550,9 +601,9 @@ async function processVideoGeneration(db, log, videoGenId) {
       provider: row.provider,
       drama_id: row.drama_id,
       storyboard_id: row.storyboard_id || undefined,
-      image_url: hasOmniRefs ? undefined : row.image_url,
-      first_frame_url: hasOmniRefs ? undefined : row.first_frame_url,
-      last_frame_url: hasOmniRefs ? undefined : row.last_frame_url,
+      image_url: hasOmniRefs && !isLocalComfyUI ? undefined : row.image_url,
+      first_frame_url: hasOmniRefs && !isLocalComfyUI ? undefined : row.first_frame_url,
+      last_frame_url: hasOmniRefs && !isLocalComfyUI ? undefined : row.last_frame_url,
       reference_urls,
       files_base_url: filesBaseUrl,
       storage_local_path: storageLocalPath,

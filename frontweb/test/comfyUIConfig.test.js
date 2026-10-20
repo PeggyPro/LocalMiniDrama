@@ -29,7 +29,7 @@ function formHarness() {
     aiAPI: { async testConnection(payload) { calls.push(payload) } },
     ElMessage: { info() {}, warning() {}, error() {}, success() {} },
   })
-  vm.runInContext(`${script}\nglobalThis.formTest = { form, vendorLock, rules, isNativeComfyUIForm, comfyUICapabilityHint, endpointPreviewInfo, onProviderChange, openTest, testResult };`, context)
+  vm.runInContext(`${script}\nglobalThis.formTest = { form, formRef, saving, submit, vendorLock, rules, isNativeComfyUIForm, comfyUICapabilityHint, endpointPreviewInfo, onProviderChange, openTest, testResult };`, context)
   return {
     ...context.formTest, calls,
     evaluate(expression) {
@@ -174,6 +174,18 @@ test('native capability UI hides the legacy opt-in switch and restores it for ex
   assert.equal(harness.evaluate(switchCondition), false)
   harness.form.value.api_protocol = 'openai'
   assert.equal(harness.evaluate(switchCondition), true)
+})
+
+test('failed form validation never enters the save operation', async () => {
+  for (const validate of [async () => { throw new Error('API Key required') }, async () => false]) {
+    const harness = formHarness()
+    const savingTransitions = []
+    Object.defineProperty(harness.saving, 'value', { get: () => false, set: value => savingTransitions.push(value) })
+    harness.formRef.value = { validate }
+    await harness.submit()
+    assert.deepEqual(savingTransitions, [])
+    assert.deepEqual(harness.calls, [])
+  }
 })
 
 test('actual openTest forwards the selected Wan default together with all saved routing fields', async () => {

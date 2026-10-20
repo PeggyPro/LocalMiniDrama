@@ -6,6 +6,7 @@ const { flattenModelIds, pickModelId, ARK_RETIRED_VIDEO_MODELS } = require('./mo
 let sharp; try { sharp = require('sharp'); } catch (_) { sharp = null; }
 const { uploadLocalImageToProxy, uploadToImageProxy } = require('./uploadService');
 const imageClient = require('./imageClient');
+const { isNativeComfyUIConfig, isComfyUITaskId, callComfyUIVideoApi, pollComfyUIVideoTask } = require('./comfyUIVideoClient');
 const {
   clampToGeminiImageAspectRatio,
   clampToViduAspectRatio,
@@ -4064,9 +4065,12 @@ async function callVideoApi(db, log, opts) {
   } = opts;
   const config = getDefaultVideoConfig(db, preferredModel);
   if (!config) {
-    throw new Error('???????????AI ?????? video ?????????');
+    throw new Error('未配置可用的视频模型，请在 AI 配置中启用视频服务并选择模型');
   }
   const model = normalizeVolcModel(getModelFromConfig(config, preferredModel), config);
+  if (isNativeComfyUIConfig(config, model)) {
+    return callComfyUIVideoApi(config, log, { ...opts, model });
+  }
   const provider = (config.provider || '').toLowerCase();
   const protocol = resolveVideoProtocol(config, preferredModel);
   if (db && opts.drama_id && VIDEO_PROTOCOLS_SUPPORT_SD2_ASSET_SCHEME.has(protocol)) {
@@ -4413,6 +4417,13 @@ async function callVideoApi(db, log, opts) {
     }
   }
 
+  if (protocol === 'openai' && !['volces', 'volcengine', 'volc'].includes(provider) && Array.isArray(opts.reference_urls)) {
+    for (let index = 0; index < opts.reference_urls.length; index++) {
+      const reference = resolveVolcClassicImage(opts.reference_urls[index], files_base_url, storage_local_path, log, video_gen_id, `reference_image_${index + 1}`);
+      if (reference) body.content.push({ type: 'image_url', image_url: { url: reference }, role: 'reference_image' });
+    }
+  }
+
   // Seedance 1.5 Pro（火山）480p 草稿模式：检测模型名含 seedance + 1-5 + pro 且分辨率为 480p 时自动添加 draft=true，降低成本并加速
   if (isVolc) {
     const m = (finalModel || '').toLowerCase();
@@ -4442,7 +4453,7 @@ async function callVideoApi(db, log, opts) {
   log.info('Video API raw response', { video_gen_id, status: res.status, raw: raw.slice(0, 1000) });
   if (!res.ok) {
     log.error('Video API failed', { status: res.status, body: raw.slice(0, 500) });
-    let errMsg = '????????: ' + res.status;
+    let errMsg = '视频生成请求失败，HTTP 状态码：' + res.status;
     try {
       const errJson = JSON.parse(raw);
       const msg = errJson.error?.message || errJson.message || errJson.error;
@@ -4457,7 +4468,7 @@ async function callVideoApi(db, log, opts) {
     data = JSON.parse(raw);
   } catch (e) {
     log.error('Video API response JSON parse failed', { video_gen_id, raw: raw.slice(0, 1000), parse_error: e.message });
-    return { error: '??????????: ' + e.message + ' | raw: ' + raw.slice(0, 200) };
+    return { error: '视频生成响应不是有效的 JSON：' + e.message + ' | raw: ' + raw.slice(0, 200) };
   }
   log.info('Video API parsed response', { video_gen_id, data: JSON.stringify(data).slice(0, 500) });
   const taskId = data.id || data.task_id || (data.data && data.data.id);
@@ -4472,13 +4483,25 @@ async function callVideoApi(db, log, opts) {
     return { task_id: taskId, status: status || 'processing' };
   }
   log.error('Video API: no task_id or video_url in response', { video_gen_id, data: JSON.stringify(data).slice(0, 500) });
-  return { error: '??? task_id ? video_url?????: ' + JSON.stringify(data).slice(0, 300) };
+  return { error: '视频接口未返回 task_id 或 video_url，请检查模型和接口配置：' + JSON.stringify(data).slice(0, 300) };
 }
 
 /**
  * ??????????????????/ChatFire ? ???? DashScope?
  */
 async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 300, intervalMs = 10000) {
+  if (isComfyUITaskId(taskId)) {
+    const task = db && videoGenId ? db.prepare('SELECT task_id FROM video_generations WHERE id = ?').get(Number(videoGenId)) : null;
+    const taskService = require('./taskService');
+    return pollComfyUIVideoTask(config || {}, log, taskId, maxAttempts, intervalMs, {
+      video_gen_id: videoGenId,
+      onProgress(progress) {
+        if (!task?.task_id) return;
+        const percent = typeof progress === 'number' && Number.isFinite(progress) ? Math.max(5, Math.min(95, Math.round(progress))) : 10;
+        taskService.updateTaskStatus(db, task.task_id, 'processing', percent, '本地 ComfyUI 正在生成视频…');
+      },
+    });
+  }
   const provider = (config.provider || '').toLowerCase();
   const protocol = resolveVideoProtocol(config);
   const isDashScope = protocol === 'dashscope';
@@ -4905,7 +4928,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
       log.warn('Video poll request failed', { attempt, error: e.message });
     }
   }
-  return { error: '??????' };
+  return { error: '视频生成查询超时，请稍后继续查询已有任务' };
 }
 
 module.exports = {
@@ -4913,6 +4936,8 @@ module.exports = {
   getEffectiveModelFromConfig,
   callVideoApi,
   pollVideoTask,
+  isNativeComfyUIConfig,
+  isComfyUITaskId,
   buildVideoUrl,
   buildQueryUrl,
   normalizeAspectRatioForApi,

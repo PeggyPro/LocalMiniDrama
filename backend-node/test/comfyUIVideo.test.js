@@ -530,18 +530,25 @@ describe('managed native ComfyUI video client', () => {
   it('videoService resumes a persisted native task with its config removed and finalizes without a new submission', async () => {
     addVideo(db, { status: 'processing', provider_task_id: 'lmd-comfy-disk-restored' });
     db.prepare('DELETE FROM ai_service_configs').run();
-    mock.method(storageLayout, 'getProjectStorageSubdir', () => { throw new Error('Skip download in isolated status test'); });
+    const videoBytes = Buffer.from('00000018667479706d703432000000006d70343269736f6d', 'hex');
+    mock.method(storageLayout, 'getProjectStorageSubdir', () => 'library');
     mock.method(global, 'fetch', async (url, options) => {
       assert.equal(options.method, 'GET');
-      assert.equal(url, BRIDGE + '/video/task/lmd-comfy-disk-restored');
-      return response({ status: 'completed', video_url: 'http://127.0.0.1:8188/view?filename=saved.mp4' });
+      if (url === BRIDGE + '/video/task/lmd-comfy-disk-restored') {
+        return response({ status: 'completed', video_url: 'http://127.0.0.1:8188/view?filename=saved.mp4' });
+      }
+      assert.equal(url, 'http://127.0.0.1:8188/view?filename=saved.mp4');
+      assert.equal(options.headers.Authorization, undefined);
+      return new Response(videoBytes, { status: 200, headers: { 'Content-Type': 'video/mp4' } });
     });
     await videoService.resumePollForVideoGeneration(db, log, 1);
-    const row = db.prepare('SELECT status, video_url FROM video_generations').get();
+    const row = db.prepare('SELECT status, video_url, local_path FROM video_generations').get();
     assert.equal(row.status, 'completed');
     assert.equal(row.video_url, 'http://127.0.0.1:8188/view?filename=saved.mp4');
+    assert.ok(row.local_path);
+    assert.deepEqual(fs.readFileSync(path.join(tempDir, row.local_path)), videoBytes);
     assert.equal(db.prepare('SELECT status FROM async_tasks').get().status, 'completed');
-    assert.equal(global.fetch.mock.callCount(), 1);
+    assert.equal(global.fetch.mock.callCount(), 2);
   });
 
   it('videoService rejects malformed stored references rather than silently submitting text-only', async () => {

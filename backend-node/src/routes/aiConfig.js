@@ -156,7 +156,9 @@ function bulkUpdateKey(db, log, cfg) {
 function testConnection(log) {
   return async (req, res) => {
     const body = req.body || {};
-    if (!body.base_url || !body.api_key) {
+    const serviceType = String(body.service_type || '').toLowerCase();
+    const isNativeComfyUI = (!serviceType || serviceType === 'video') && videoClient.isNativeComfyUIConfig(body);
+    if (!body.base_url || (!body.api_key && !isNativeComfyUI)) {
       return response.badRequest(res, '缺少 base_url 或 api_key');
     }
     try {
@@ -164,10 +166,15 @@ function testConnection(log) {
         base_url: body.base_url,
         api_key: body.api_key,
         model: body.model,
+        default_model: body.default_model,
+        name: body.name,
         provider: body.provider,
+        api_protocol: body.api_protocol,
         endpoint: body.endpoint,
+        query_endpoint: body.query_endpoint,
         service_type: body.service_type,
         settings: body.settings,
+        log,
       });
       response.success(res, { message: '连接测试成功' });
     } catch (err) {

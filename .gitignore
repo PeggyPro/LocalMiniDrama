@@ -31,3 +31,5 @@ backend-node/pnpm-lock.yaml
 build_edu
 node_modules
 ohos_hap
+backend-node/data/comfyui-bridge/
+backend-node/comfyui-bridge/__pycache__/

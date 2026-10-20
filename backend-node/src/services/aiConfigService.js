@@ -2,6 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const { normalizeMaterialHubToken } = require('./jimengMaterialHubService');
+const { isNativeComfyUIConfig, validateComfyUIVideoConnection } = require('./comfyUIVideoClient');
 
 function normalizeApiKeyForService(serviceType, apiKey) {
   if (serviceType === 'jimeng2_character_auth' && apiKey != null) {
@@ -275,12 +276,20 @@ function rowToConfig(r) {
 async function testConnection(opts) {
   const base = (opts.base_url || '').replace(/\/$/, '');
   if (!base) throw new Error('base_url 必填');
-  if (!opts.api_key) throw new Error('api_key 必填');
   const models = flattenModelIds(opts.model);
   const model = remapArkModelId(opts.base_url, models[0] || '');
-  if (!model && (opts.provider === 'gemini' || opts.provider === 'google')) throw new Error('model 必填');
   const provider = (opts.provider || 'openai').toLowerCase();
   const serviceType = (opts.service_type || '').toLowerCase();
+  if (!serviceType || serviceType === 'video') {
+    const nativeDefault = pickModelId(opts.default_model);
+    const nativeModel = nativeDefault && (!models.length || models.includes(nativeDefault)) ? nativeDefault : model;
+    if (isNativeComfyUIConfig(opts, nativeModel)) {
+      await validateComfyUIVideoConnection(opts, opts.log, nativeModel);
+      return;
+    }
+  }
+  if (!opts.api_key) throw new Error('api_key 必填');
+  if (!model && (opts.provider === 'gemini' || opts.provider === 'google')) throw new Error('model 必填');
   let endpoint = opts.endpoint || '';
 
   // --- NanoBanana ---

@@ -15,6 +15,7 @@ if (insecureTlsOn) {
 const { createApp } = require('./app.js');
 const { closeDb } = require('./db/index.js');
 const logger = require('./logger.js');
+const { startComfyUIBridge, stopComfyUIBridge } = require('./services/comfyUIBridgeProcess.js');
 
 const path = require('path');
 const { app, config, db } = createApp();
@@ -22,7 +23,14 @@ const port = Number(process.env.PORT) || config.server?.port || 5680;
 const host = config.server?.host || '0.0.0.0';
 
 let server;
+let shuttingDown = false;
 async function start() {
+  try {
+    await startComfyUIBridge({ config, log: logger });
+  } catch (err) {
+    logger.warn('ComfyUI bridge 未就绪，本地视频生成暂不可用', { error: err.message });
+  }
+  if (shuttingDown) return;
   try {
     const { initAgent } = await import('./mastra/index.mjs');
     const dataDir = path.resolve(path.dirname(config.database.path));
@@ -30,6 +38,7 @@ async function start() {
   } catch (err) {
     logger.warn('助手未就绪', { error: err.message });
   }
+  if (shuttingDown) return;
   server = app.listen(port, host, () => {
     logger.info('Server starting', { port, host });
     logger.info('Frontend:  http://localhost:' + port);
@@ -40,14 +49,35 @@ async function start() {
 }
 start();
 
-function shutdown() {
+async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
   logger.info('Shutting down server...');
-  server.close(() => {
+  const deadline = setTimeout(() => process.exit(1), 5000);
+  deadline.unref();
+  const closeHttp = server
+    ? new Promise((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+      server.closeIdleConnections?.();
+    })
+    : Promise.resolve();
+  const results = await Promise.allSettled([closeHttp, stopComfyUIBridge()]);
+  let failed = false;
+  for (const result of results) {
+    if (result.status === 'rejected') {
+      failed = true;
+      logger.warn('Server shutdown cleanup failed', { error: result.reason.message });
+    }
+  }
+  try {
     closeDb();
-    logger.info('Server exited');
-    process.exit(0);
-  });
-  setTimeout(() => process.exit(1), 5000);
+  } catch (err) {
+    failed = true;
+    logger.warn('Database shutdown failed', { error: err.message });
+  }
+  clearTimeout(deadline);
+  logger.info('Server exited');
+  process.exit(failed ? 1 : 0);
 }
 
 process.on('SIGINT', shutdown);
