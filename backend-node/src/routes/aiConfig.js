@@ -1,5 +1,55 @@
 const aiConfigService = require('../services/aiConfigService');
+const aiClient = require('../services/aiClient');
+const imageClient = require('../services/imageClient');
+const videoClient = require('../services/videoClient');
+const { applyReasoningEffort } = require('../services/reasoningEffort');
+const { applyDeepSeekChatOptions } = require('../services/deepseekConfig');
 const response = require('../response');
+
+function effective(db) {
+  return (req, res) => {
+    const serviceType = req.query.service_type || 'text';
+    if (!['text', 'image', 'storyboard_image', 'video'].includes(serviceType)) {
+      return response.badRequest(res, '不支持的服务类型');
+    }
+    if (req.query.scene_key != null && typeof req.query.scene_key !== 'string') {
+      return response.badRequest(res, '无效的场景键');
+    }
+    const sceneKey = (req.query.scene_key || '').trim();
+    const selectionOptions = { readOnly: true };
+    let config = null;
+    let source = 'default';
+    let body = {};
+    if (serviceType === 'text') {
+      const mapped = sceneKey ? aiClient.getConfigFromModelMap(db, sceneKey, selectionOptions) : null;
+      config = mapped?.config || aiClient.getDefaultConfig(db, 'text', selectionOptions);
+      source = mapped ? 'scene' : 'default';
+      if (config) {
+        const model = aiClient.getModelFromConfig(config, mapped?.modelOverride);
+        body = aiClient.applyVolcChatOptions(config,
+          applyDeepSeekChatOptions(config, applyReasoningEffort(config, { model })));
+      }
+    } else if (serviceType === 'video') {
+      config = videoClient.getDefaultVideoConfig(db, undefined, selectionOptions);
+      if (config) body.model = videoClient.getEffectiveModelFromConfig(config);
+    } else {
+      config = imageClient.getDefaultImageConfig(db, undefined, undefined, serviceType, selectionOptions);
+      if (config) body.model = imageClient.getModelFromConfig(config);
+    }
+    response.success(res, {
+      configured: !!config,
+      config_id: config?.id ?? null,
+      config_name: config?.name || '',
+      provider: config?.provider || '',
+      service_type: config?.service_type || '',
+      model: body.model || '',
+      reasoning_effort: serviceType === 'text' ? body.reasoning_effort ?? null : null,
+      thinking: serviceType === 'text' ? body.thinking?.type ?? null : null,
+      source,
+      scene_key: sceneKey || null,
+    });
+  };
+}
 
 function list(db) {
   return (req, res) => {
@@ -185,6 +235,7 @@ function listJimeng2MaterialAssets(log) {
 module.exports = function aiConfigRoutes(db, log, cfg) {
   return {
     list: list(db),
+    effective: effective(db),
     get: get(db),
     vendorLock: vendorLock(cfg),
     create: create(db, log, cfg),

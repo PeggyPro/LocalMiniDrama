@@ -94,7 +94,7 @@
             </el-table-column>
             <el-table-column prop="service_type" label="类型" width="148">
               <template #default="{ row }">
-                <span :class="['type-badge', 'type-' + row.service_type]">
+                <span :class="['type-badge', 'ai-service-type', 'type-' + row.service_type]">
                   <el-icon class="type-icon">
                     <ChatDotRound v-if="row.service_type === 'text'" />
                     <Picture v-else-if="row.service_type === 'image'" />
@@ -2546,37 +2546,14 @@ onMounted(() => {
   font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
-  border: 1px solid transparent;
+  border-width: 1px;
+  border-style: solid;
 }
 .type-icon {
   font-size: 13px;
   flex-shrink: 0;
 }
 
-/* 文本/对话 — 蓝色 */
-.type-text {
-  background: rgba(59, 130, 246, 0.12);
-  color: #3b82f6;
-  border-color: rgba(59, 130, 246, 0.25);
-}
-/* 文本生成图片 — 绿色 */
-.type-image {
-  background: rgba(16, 185, 129, 0.12);
-  color: #10b981;
-  border-color: rgba(16, 185, 129, 0.25);
-}
-/* 分镜图片生成 — 紫色 */
-.type-storyboard_image {
-  background: rgba(139, 92, 246, 0.12);
-  color: #8b5cf6;
-  border-color: rgba(139, 92, 246, 0.25);
-}
-/* 视频 — 橙色 */
-.type-video {
-  background: rgba(249, 115, 22, 0.12);
-  color: #f97316;
-  border-color: rgba(249, 115, 22, 0.25);
-}
 .jimeng2-assets-actions {
   display: flex;
   flex-wrap: wrap;
@@ -2589,18 +2566,6 @@ onMounted(() => {
   min-width: 200px;
   margin: 0;
   line-height: 1.5;
-}
-
-.type-jimeng2_character_auth {
-  background: rgba(20, 184, 166, 0.14);
-  color: #0d9488;
-  border-color: rgba(20, 184, 166, 0.28);
-}
-
-.type-model_ark_asset {
-  background: rgba(99, 102, 241, 0.12);
-  color: #6366f1;
-  border-color: rgba(99, 102, 241, 0.25);
 }
 
 .no-default {

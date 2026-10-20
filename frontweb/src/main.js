@@ -1,5 +1,6 @@
 import { createApp, h } from 'vue'
 import './styles/theme.css'
+import './styles/aiServiceTypes.css'
 // 初始化主题（必须在挂载前执行）
 import './composables/useTheme.js'
 import { createPinia } from 'pinia'

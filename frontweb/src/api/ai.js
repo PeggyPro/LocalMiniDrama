@@ -1,6 +1,11 @@
 import request from '@/utils/request'
 
 export const aiAPI = {
+  getEffective(sceneKey, serviceType = 'text') {
+    return request.get('/ai-configs/effective', {
+      params: { scene_key: sceneKey || undefined, service_type: serviceType },
+    })
+  },
   list(serviceType) {
     return request.get('/ai-configs', { params: serviceType ? { service_type: serviceType } : {} })
   },

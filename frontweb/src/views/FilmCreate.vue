@@ -234,7 +234,10 @@
               </div>
               <div class="script-sub-divider" />
               <div id="anchor-script" class="script-sub-block">
-                <h2 class="section-title">剧本</h2>
+                <div class="model-section-heading">
+                  <h2 class="section-title">剧本</h2>
+                  <AIModelInfoCard scene-key="story_generation" usage="剧本生成" :refresh-key="modelInfoRevision" @open-config="showAiConfigDialog = true" />
+                </div>
                 <div class="row gap" style="margin-bottom: 10px; flex-wrap: wrap;">
                   <el-select
                     v-model="selectedEpisodeId"
@@ -452,7 +455,11 @@
           <!-- 角色生成 -->
           <div id="anchor-characters" class="resource-block card">
             <div class="collapse-header resource-block-header" @click="charactersBlockCollapsed = !charactersBlockCollapsed">
-              <h3 class="resource-block-title">角色生成</h3>
+              <div class="resource-heading-main">
+                <h3 class="resource-block-title">角色生成</h3>
+                <AIModelInfoCard scene-key="role_extraction" usage="提取" :refresh-key="modelInfoRevision" @open-config="showAiConfigDialog = true" />
+                <AIModelInfoCard service-type="image" usage="生图" :refresh-key="modelInfoRevision" @open-config="showAiConfigDialog = true" />
+              </div>
               <el-icon class="collapse-icon"><ArrowUp v-if="!charactersBlockCollapsed" /><ArrowDown v-else /></el-icon>
             </div>
             <div v-show="!charactersBlockCollapsed" class="resource-block-body">
@@ -606,7 +613,11 @@
           <!-- 道具生成 -->
           <div id="anchor-props" class="resource-block card">
             <div class="collapse-header resource-block-header" @click="propsBlockCollapsed = !propsBlockCollapsed">
-              <h3 class="resource-block-title">道具生成</h3>
+              <div class="resource-heading-main">
+                <h3 class="resource-block-title">道具生成</h3>
+                <AIModelInfoCard scene-key="prop_extraction" usage="提取" :refresh-key="modelInfoRevision" @open-config="showAiConfigDialog = true" />
+                <AIModelInfoCard service-type="image" usage="生图" :refresh-key="modelInfoRevision" @open-config="showAiConfigDialog = true" />
+              </div>
               <el-icon class="collapse-icon"><ArrowUp v-if="!propsBlockCollapsed" /><ArrowDown v-else /></el-icon>
             </div>
             <div v-show="!propsBlockCollapsed" class="resource-block-body">
@@ -710,7 +721,11 @@
           <!-- 场景生成 -->
           <div id="anchor-scenes" class="resource-block card">
             <div class="collapse-header resource-block-header" @click="scenesBlockCollapsed = !scenesBlockCollapsed">
-              <h3 class="resource-block-title">场景生成</h3>
+              <div class="resource-heading-main">
+                <h3 class="resource-block-title">场景生成</h3>
+                <AIModelInfoCard scene-key="scene_extraction" usage="提取" :refresh-key="modelInfoRevision" @open-config="showAiConfigDialog = true" />
+                <AIModelInfoCard service-type="image" usage="生图" :refresh-key="modelInfoRevision" @open-config="showAiConfigDialog = true" />
+              </div>
               <el-icon class="collapse-icon"><ArrowUp v-if="!scenesBlockCollapsed" /><ArrowDown v-else /></el-icon>
             </div>
             <div v-show="!scenesBlockCollapsed" class="resource-block-body">
@@ -817,10 +832,17 @@
 
       <!-- 6. 分镜生成 -->
       <section id="anchor-storyboard" class="section card">
-        <h2 class="section-title">
-          <span>5. 分镜生成</span>
-          <span class="step-desc">根据剧本、角色、场景自动生成分镜头脚本</span>
-        </h2>
+        <div class="model-section-heading">
+          <h2 class="section-title">
+            <span>5. 分镜生成</span>
+            <span class="step-desc">根据剧本、角色、场景自动生成分镜头脚本</span>
+          </h2>
+          <div class="module-model-cards">
+            <AIModelInfoCard scene-key="storyboard_extraction" usage="分镜脚本" :refresh-key="modelInfoRevision" @open-config="showAiConfigDialog = true" />
+            <AIModelInfoCard service-type="storyboard_image" usage="分镜图片" :refresh-key="modelInfoRevision" @open-config="showAiConfigDialog = true" />
+            <AIModelInfoCard service-type="video" usage="分镜视频" :refresh-key="modelInfoRevision" @open-config="showAiConfigDialog = true" />
+          </div>
+        </div>
         <div class="sb-config-row">
           <label class="sb-config-item">
             <span class="sb-config-label">分镜数量</span>
@@ -1585,7 +1607,10 @@
 
       <!-- 7. 视频配置 + AI 模型配置 -->
       <section class="section card">
-        <h2 class="section-title">视频配置</h2>
+        <div class="model-section-heading">
+          <h2 class="section-title">视频配置</h2>
+          <AIModelInfoCard service-type="video" usage="视频生成" :refresh-key="modelInfoRevision" @open-config="showAiConfigDialog = true" />
+        </div>
         <div class="config-grid">
           <el-form-item label="分辨率">
             <el-select v-model="videoResolution" style="width: 160px">
@@ -1639,12 +1664,15 @@
             </div>
           </el-form-item>
         </div>
-        <p class="config-tip">文本/图片/视频使用的模型以「<el-link type="primary" underline="never" @click="showAiConfigDialog = true">AI 配置</el-link>」中设为默认的为准。</p>
+        <p class="config-tip">各模块标题旁显示当前使用的配置和模型，可在「<el-link type="primary" underline="never" @click="showAiConfigDialog = true">AI 配置</el-link>」中修改；文本任务优先使用业务场景配置。</p>
       </section>
 
       <!-- 8. 合成视频 -->
       <section id="anchor-video" class="section card">
-        <h2 class="section-title">合成视频</h2>
+        <div class="model-section-heading">
+          <h2 class="section-title">合成视频</h2>
+          <span class="local-composition-info">FFmpeg · 本地合成</span>
+        </div>
         <el-button
           type="primary"
           size="large"
@@ -2674,6 +2702,7 @@ import { canUseUniversalOmniVideoApi } from '@/utils/videoOmniSupport'
 import { exportStoryboardSheet } from '@/utils/exportStoryboardSheet'
 import StylePickerButton from '@/components/StylePickerButton.vue'
 import AIConfigContent from '@/components/AIConfigContent.vue'
+import AIModelInfoCard from '@/components/AIModelInfoCard.vue'
 import UniversalSegmentOmniAtEditor from '@/components/UniversalSegmentOmniAtEditor.vue'
 import {
   generationStyleOptions,
@@ -2713,8 +2742,10 @@ function goCanvasMode() {
 
 
 const showAiConfigDialog = ref(false)
+const modelInfoRevision = ref(0)
 watch(showAiConfigDialog, (open) => {
   if (!open) {
+    modelInfoRevision.value++
     invalidateActiveVideoAiConfigCache()
     loadPipelineConcurrency()
   }
@@ -8260,6 +8291,34 @@ watch(
 </script>
 
 <style scoped>
+.model-section-heading,
+.resource-heading-main,
+.module-model-cards {
+  display: flex;
+  align-items: center;
+  gap: 8px 12px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.model-section-heading {
+  margin-bottom: 12px;
+}
+.model-section-heading .section-title {
+  margin: 0;
+}
+.resource-heading-main {
+  flex: 1;
+}
+.resource-heading-main .resource-block-title {
+  flex-shrink: 0;
+}
+.local-composition-info {
+  padding: 4px 9px;
+  border: 1px solid var(--el-border-color);
+  border-radius: 7px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
 .script-workbench-unified {
   margin-bottom: 0;
 }

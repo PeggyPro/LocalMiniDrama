@@ -208,8 +208,8 @@ function postJSONStream(url, headers, body, silenceTimeoutMs = 60000, onProgress
 }
 
 // 使用前端设置的「默认」与「优先级」：listConfigs 已按 is_default DESC, priority DESC 排序
-function getDefaultConfig(db, serviceType) {
-  const configs = aiConfigService.listConfigs(db, serviceType);
+function getDefaultConfig(db, serviceType, options) {
+  const configs = aiConfigService.listConfigs(db, serviceType, options);
   const active = configs.filter((c) => c.is_active);
   if (active.length === 0) return null;
   const defaultOne = active.find((c) => c.is_default);
@@ -279,11 +279,11 @@ function getModelFromConfig(config, preferredModel) {
  * 从 ai_model_map 表查找业务场景对应的模型配置
  * 返回 { config, modelOverride } 或 null（未配置时）
  */
-function getConfigFromModelMap(db, sceneKey) {
+function getConfigFromModelMap(db, sceneKey, options) {
   try {
     const row = db.prepare('SELECT * FROM ai_model_map WHERE key = ?').get(sceneKey);
     if (!row) return null;
-    const configs = aiConfigService.listConfigs(db, row.service_type || 'text');
+    const configs = aiConfigService.listConfigs(db, row.service_type || 'text', options);
     let config = null;
     if (row.config_id) {
       config = configs.find((c) => c.id === row.config_id && c.is_active) || null;
@@ -836,6 +836,7 @@ module.exports = {
   getDefaultConfig,
   getConfigForModel,
   getConfigFromModelMap,
+  getModelFromConfig,
   generateText,
   streamGenerateText,
   generateTextWithVision,

@@ -853,7 +853,7 @@ async function callKlingOmniVideoApi(config, log, opts) {
     official_host: isKlingOfficialOmniHost(base),
   });
 
-  const modelName = model || 'kling-video-o1';
+  const modelName = model || DEFAULT_VIDEO_MODELS.kling_omni;
   const durStr = omniDurationString(modelName, duration);
   const ratio = resolveKlingOmniAspectRatio(aspect_ratio, log, video_gen_id);
 
@@ -995,8 +995,8 @@ function parseKlingOmniPollVideoUrl(data) {
 }
 
 // ??????????????????listConfigs ?? is_default DESC, priority DESC ??
-function getDefaultVideoConfig(db, preferredModel) {
-  const configs = aiConfigService.listConfigs(db, 'video');
+function getDefaultVideoConfig(db, preferredModel, options) {
+  const configs = aiConfigService.listConfigs(db, 'video', options);
   const active = configs.filter((c) => c.is_active);
   if (active.length === 0) return null;
   if (preferredModel) {
@@ -1193,6 +1193,27 @@ function getModelFromConfig(config, preferredModel) {
   if (preferred && models.includes(preferred)) return preferred;
   if (fallback && models.includes(fallback)) return fallback;
   return models[0] || '';
+}
+
+const DEFAULT_VIDEO_MODELS = {
+  kling_omni: 'kling-video-o1',
+  kling: 'kling-video',
+  gemini: 'veo-3.0-generate-preview',
+  vidu: 'viduq2',
+  agnes: 'agnes-video-v2.0',
+  sora: 'sora-2',
+  xai: 'grok-imagine-video',
+  minimax_h3: 'MiniMax-H3',
+};
+
+/** Default request model, before request-specific reference-image choices. */
+function getEffectiveModelFromConfig(config, preferredModel) {
+  const protocol = resolveVideoProtocol(config, preferredModel);
+  const selected = getModelFromConfig(config, preferredModel);
+  if (protocol === 'jimeng_ai_api') return selected;
+  const model = normalizeVolcModel(selected, config);
+  if (protocol === 'minimax_h3' && isMinimaxH3Model(model)) return DEFAULT_VIDEO_MODELS.minimax_h3;
+  return model || DEFAULT_VIDEO_MODELS[protocol] || '';
 }
 
 /** 仅把 http(s) 当作可下载直链，避免方舟/中转让 result_url 填入错误文案 */
@@ -1475,7 +1496,7 @@ async function callKlingVideoApi(config, log, opts) {
     Authorization: 'Bearer ' + apiKey,
   };
 
-  const m = model || 'kling-video';
+  const m = model || DEFAULT_VIDEO_MODELS.kling;
   const isMotionControl = m === 'kling-motion-control';
 
   // 处理图片 URL（本地路径 → base64 转换）
@@ -1797,7 +1818,7 @@ async function callGeminiVideoApi(config, log, opts) {
   const { prompt, duration, aspect_ratio, image_url, video_gen_id, files_base_url, storage_local_path, model } = opts;
   const apiKey = config.api_key || '';
   const base = (config.base_url || 'https://generativelanguage.googleapis.com').replace(/\/$/, '');
-  const modelName = model || 'veo-3.0-generate-preview';
+  const modelName = model || DEFAULT_VIDEO_MODELS.gemini;
 
   // durationSeconds ??? 5-8 ?
   const durationSec = Math.min(8, Math.max(5, Math.round(Number(duration) || 8)));
@@ -2086,7 +2107,7 @@ async function callViduVideoApi(config, log, opts) {
   const { prompt, model, duration, aspect_ratio, resolution: resolutionOpt, image_url, video_gen_id, files_base_url, storage_local_path } = opts;
   const apiKey = config.api_key || '';
   const base = (config.base_url || 'https://api.vidu.cn').replace(/\/$/, '');
-  const modelName = model || 'viduq2';
+  const modelName = model || DEFAULT_VIDEO_MODELS.vidu;
   const dur = Math.min(10, Math.max(1, Math.round(Number(duration) || 5)));
   const ratio = clampToViduAspectRatio(aspect_ratio || '16:9');
   const hasImage = !!(image_url && image_url.trim());
@@ -2769,7 +2790,7 @@ async function callAgnesVideoApi(db, config, log, opts) {
     const dims = agnesDimensionsFromAspectRatio(aspect_ratio || '16:9');
     const numFrames = agnesSnapNumFrames(duration, frameRate);
     body = {
-      model: model || 'agnes-video-v2.0',
+      model: model || DEFAULT_VIDEO_MODELS.agnes,
       prompt: prompt || '',
       width: dims.width,
       height: dims.height,
@@ -3116,7 +3137,7 @@ async function callSoraVideoApi(config, log, opts) {
   const boundary = 'soraform_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
 
   const textFields = [
-    ['model', model || 'sora-2'],
+    ['model', model || DEFAULT_VIDEO_MODELS.sora],
     ['prompt', prompt || ''],
     ['seconds', dur],
     ['size', size],
@@ -3486,7 +3507,7 @@ async function callXaiVideoApi(config, log, opts) {
   const ratio = normalizeAspectRatioForApi(aspect_ratio) || '16:9';
   const dur = clampXaiDuration(duration != null ? duration : 8);
   const reso = resolveXaiVideoResolution(resolution);
-  const modelName = model || 'grok-imagine-video';
+  const modelName = model || DEFAULT_VIDEO_MODELS.xai;
   const useGrokVideoImages = isXaiGrokVideoStyleModel(modelName);
 
   let imageUrlForApi = '';
@@ -3909,7 +3930,7 @@ async function callMinimaxH3VideoApi(config, log, opts) {
     video_gen_id,
   } = opts || {};
   const url = buildMinimaxH3CreateUrl(config);
-  const finalModel = isMinimaxH3Model(model) ? 'MiniMax-H3' : model || 'MiniMax-H3';
+  const finalModel = isMinimaxH3Model(model) ? DEFAULT_VIDEO_MODELS.minimax_h3 : model || DEFAULT_VIDEO_MODELS.minimax_h3;
   const dur = normalizeMinimaxH3Duration(duration);
   const res = normalizeMinimaxH3Resolution(resolution);
   const ratio = normalizeAspectRatioForApi(aspect_ratio) || String(aspect_ratio || '16:9').trim() || '16:9';
@@ -4889,6 +4910,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
 
 module.exports = {
   getDefaultVideoConfig,
+  getEffectiveModelFromConfig,
   callVideoApi,
   pollVideoTask,
   buildVideoUrl,

@@ -1,0 +1,36 @@
+/* Shared by AI configuration type badges and model information cards. */
+.ai-service-type {
+  background-color: var(--ai-service-background, rgba(148, 163, 184, 0.1));
+  color: var(--ai-service-color, #64748b);
+  border-color: var(--ai-service-border, rgba(148, 163, 184, 0.25));
+}
+.ai-service-type.type-text {
+  --ai-service-background: rgba(59, 130, 246, 0.12);
+  --ai-service-color: #3b82f6;
+  --ai-service-border: rgba(59, 130, 246, 0.25);
+}
+.ai-service-type.type-image {
+  --ai-service-background: rgba(16, 185, 129, 0.12);
+  --ai-service-color: #10b981;
+  --ai-service-border: rgba(16, 185, 129, 0.25);
+}
+.ai-service-type.type-storyboard_image {
+  --ai-service-background: rgba(139, 92, 246, 0.12);
+  --ai-service-color: #8b5cf6;
+  --ai-service-border: rgba(139, 92, 246, 0.25);
+}
+.ai-service-type.type-video {
+  --ai-service-background: rgba(249, 115, 22, 0.12);
+  --ai-service-color: #f97316;
+  --ai-service-border: rgba(249, 115, 22, 0.25);
+}
+.ai-service-type.type-jimeng2_character_auth {
+  --ai-service-background: rgba(20, 184, 166, 0.14);
+  --ai-service-color: #0d9488;
+  --ai-service-border: rgba(20, 184, 166, 0.28);
+}
+.ai-service-type.type-model_ark_asset {
+  --ai-service-background: rgba(99, 102, 241, 0.12);
+  --ai-service-color: #6366f1;
+  --ai-service-border: rgba(99, 102, 241, 0.25);
+}
