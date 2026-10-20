@@ -1,0 +1,232 @@
+{
+  "testedConfiguration": "Sub2Api 分镜图",
+  "provider": "Sub2Api",
+  "model": "gpt-image-2.5-sunburst",
+  "conclusion": "The tested model can use image references via multipart /images/edits. The application-compatible JSON /images/generations path did not use the supplied image in these trials.",
+  "databaseReadOnly": true,
+  "productionBusinessCodeChanged": false,
+  "totalUpstreamRequests": 6,
+  "validExperiments": 4,
+  "excludedTrials": "Two initial reference trials used malformed URL inputs and are excluded; the original text-only control remains valid.",
+  "currentReferenceMarker": "B9FE6F",
+  "standardEditReferenceMarker": "827722",
+  "baseline": {
+    "case": "01-text-only",
+    "endpoint": "/images/generations",
+    "fields": [
+      "model",
+      "prompt",
+      "n",
+      "size"
+    ],
+    "model": "gpt-image-2.5-sunburst",
+    "requestBytes": 573,
+    "referenceCount": 0,
+    "references": [],
+    "prompt": "Generate one cinematic photorealistic movie frame of the same main character shown in the supplied reference, crouching inside a rustic wooden cattle shed. He raises his right hand near his face and looks closely at his fingertips. Preserve the reference character's face, headwear, hairstyle, clothing, fabric, and accessories. Single continuous scene, natural cinematic light, 16:9 composition, no collage, no split panels, no reference sheet. If no reference image is attached, still draw the scene.",
+    "httpStatus": 200,
+    "elapsedMs": 24635,
+    "responseFields": [
+      "created",
+      "background",
+      "data",
+      "output_format",
+      "quality",
+      "safety_identifier",
+      "size",
+      "usage"
+    ],
+    "outputCount": 1,
+    "usage": {
+      "input_tokens": 106,
+      "input_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 106
+      },
+      "output_tokens": 515,
+      "output_tokens_details": {
+        "image_tokens": 515,
+        "text_tokens": 0
+      },
+      "total_tokens": 621
+    }
+  },
+  "applicationCompatibleRequests": [
+    {
+      "case": "02-character-reference",
+      "endpoint": "/images/generations",
+      "fields": [
+        "model",
+        "prompt",
+        "n",
+        "size",
+        "image"
+      ],
+      "model": "gpt-image-2.5-sunburst",
+      "requestBytes": 3711476,
+      "referenceCount": 1,
+      "references": [
+        {
+          "encoding": "base64",
+          "mimeType": "image/png",
+          "bytes": 2783149,
+          "sha256": "c459a200549333e28bf48822088eed66d9359b9fb768354f97b8f77763332f99"
+        }
+      ],
+      "prompt": "Generate one cinematic photorealistic movie frame of the same main character shown in the supplied reference, crouching inside a rustic wooden cattle shed. He raises his right hand near his face and looks closely at his fingertips. Preserve the reference character's face, headwear, hairstyle, clothing, fabric, and accessories. Single continuous scene, natural cinematic light, 16:9 composition, no collage, no split panels, no reference sheet. If no reference image is attached, still draw the scene.",
+      "referenceBytesVerified": true,
+      "httpStatus": 200,
+      "elapsedMs": 26854,
+      "responseFields": [
+        "created",
+        "background",
+        "data",
+        "output_format",
+        "quality",
+        "safety_identifier",
+        "size",
+        "usage"
+      ],
+      "outputCount": 1,
+      "usage": {
+        "input_tokens": 106,
+        "input_tokens_details": {
+          "image_tokens": 0,
+          "text_tokens": 106
+        },
+        "output_tokens": 515,
+        "output_tokens_details": {
+          "image_tokens": 515,
+          "text_tokens": 0
+        },
+        "total_tokens": 621
+      }
+    },
+    {
+      "case": "03-marker-reference",
+      "endpoint": "/images/generations",
+      "fields": [
+        "model",
+        "prompt",
+        "n",
+        "size",
+        "image"
+      ],
+      "model": "gpt-image-2.5-sunburst",
+      "requestBytes": 49136,
+      "referenceCount": 1,
+      "references": [
+        {
+          "encoding": "base64",
+          "mimeType": "image/png",
+          "bytes": 36528,
+          "sha256": "ef4c95a281edc610bda7a63145bb833a93d8e539ed6f9c25a6e4b34a4e1eacdc"
+        }
+      ],
+      "prompt": "Recreate the attached reference image as faithfully as possible. Preserve its exact arrangement of shapes, fill colors, printed text and background. Flat geometric test card, no new objects or decorative details. Do not invent any details. If no reference image is attached, render one plain gray square on a white background.",
+      "referenceBytesVerified": true,
+      "httpStatus": 200,
+      "elapsedMs": 14317,
+      "responseFields": [
+        "created",
+        "background",
+        "data",
+        "output_format",
+        "quality",
+        "safety_identifier",
+        "size",
+        "usage"
+      ],
+      "outputCount": 1,
+      "usage": {
+        "input_tokens": 67,
+        "input_tokens_details": {
+          "image_tokens": 0,
+          "text_tokens": 67
+        },
+        "output_tokens": 515,
+        "output_tokens_details": {
+          "image_tokens": 515,
+          "text_tokens": 0
+        },
+        "total_tokens": 582
+      }
+    }
+  ],
+  "standardEditRequest": {
+    "case": "04-standard-image-edits",
+    "endpoint": "/images/edits",
+    "model": "gpt-image-2.5-sunburst",
+    "encoding": "multipart/form-data",
+    "fields": [
+      "model",
+      "prompt",
+      "n",
+      "size",
+      "image"
+    ],
+    "prompt": "Recreate the attached reference image as faithfully as possible. Preserve its exact arrangement of shapes, fill colors, printed text and background. Flat geometric test card, no new objects or decorative details. Do not invent any details. If no reference image is attached, render one plain gray square on a white background.",
+    "referenceCount": 1,
+    "referenceBytesVerified": true,
+    "references": [
+      {
+        "bytes": 37424,
+        "sha256": "e0cd58e75e7e773b38786a84d0da67889d8521e6eee020a3d5eb5592a00c0cc0",
+        "mimeType": "image/png"
+      }
+    ],
+    "requestBytes": 38295,
+    "httpStatus": 200,
+    "elapsedMs": 19850,
+    "responseFields": [
+      "created",
+      "background",
+      "data",
+      "output_format",
+      "quality",
+      "safety_identifier",
+      "size",
+      "usage"
+    ],
+    "usage": {
+      "input_tokens": 1101,
+      "input_tokens_details": {
+        "image_tokens": 1024,
+        "text_tokens": 77
+      },
+      "output_tokens": 515,
+      "output_tokens_details": {
+        "image_tokens": 515,
+        "text_tokens": 0
+      },
+      "total_tokens": 1616
+    }
+  },
+  "images": [
+    {
+      "filename": "reference-marker.png",
+      "sha256": "ef4c95a281edc610bda7a63145bb833a93d8e539ed6f9c25a6e4b34a4e1eacdc",
+      "label": "当前调用：输入参考图"
+    },
+    {
+      "filename": "03-marker-reference.png",
+      "sha256": "92695e9a25356742071670b3d57bc9cfdaeb81e1c97ed281696ade7db79ad45b",
+      "label": "当前调用：未复现参考内容"
+    },
+    {
+      "filename": "reference-marker.png",
+      "sha256": "e0cd58e75e7e773b38786a84d0da67889d8521e6eee020a3d5eb5592a00c0cc0",
+      "label": "标准编辑：输入参考图"
+    },
+    {
+      "filename": "04-standard-image-edits.png",
+      "sha256": "c41758cb7c4d7526cfca72c1ff92501cf53197455d0d2d0c5f02650ed3f2d1ba",
+      "label": "标准编辑：形状、颜色和编号均复现"
+    }
+  ],
+  "limitations": [
+    "One corrected trial per reference case; stochastic variation is not quantified.",
+    "Successful geometric reference copying does not guarantee perfect character identity across all shots.",
+    "Upstream token usage is provider-reported; the output-only random code gives an independent visual check."
+  ]
+}

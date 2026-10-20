@@ -61,6 +61,7 @@ const uploadService = require('./uploadService');
 const storageLayout = require('./storageLayout');
 const aiClient = require('./aiClient');
 const promptI18n = require('./promptI18n');
+const { mergeStoryboardReferences } = require('./storyboardImageReferences');
 
 const LAST_FRAME_TYPES = new Set(['last', 'storyboard_last', 'tail', 'last_frame']);
 
@@ -732,6 +733,7 @@ async function processImageGeneration(db, log, imageGenId) {
         const parsed = JSON.parse(row.reference_images);
         if (Array.isArray(parsed) && parsed.length > 0) {
           reference_image_urls = parsed;
+          reference_context_note = parsed.map((_, index) => `Image ${index + 1}: user-provided reference image`).join('\n');
           reference_source = 'DB';
         }
       } catch (_) {}
@@ -760,17 +762,17 @@ async function processImageGeneration(db, log, imageGenId) {
           }
 
           if (firstRef) {
-            const layoutLabel = 'Image LAYOUT_LOCK: 首帧构图与人物站位参考（CRITICAL: 必须保持与此图完全一致的左右站位、人物相对位置、相机取景、整体布局，仅演化姿态/表情/结果元素，严禁交换位置或重构画面）';
-            if (!reference_image_urls || reference_image_urls.length === 0) {
-              reference_image_urls = [firstRef];
-              reference_context_note = layoutLabel;
-              reference_source = 'auto-first-frame-for-last (layout lock)';
-            } else {
-              // 已存在参考时，优先插入到最前面（最高权重）
-              reference_image_urls = [firstRef, ...reference_image_urls].slice(0, refLimits.total);
-              reference_context_note = (reference_context_note ? reference_context_note + '\n' : '') + layoutLabel;
-              reference_source = (reference_source || 'mixed') + '+first-frame-layout-lock';
-            }
+            const layoutLabel = 'Image 1: LAYOUT_LOCK: first frame layout lock — 首帧构图与人物站位参考（CRITICAL: 必须保持与此图完全一致的左右站位、人物相对位置、相机取景、整体布局，仅演化姿态/表情/结果元素，严禁交换位置或重构画面）';
+            const hadReferences = reference_image_urls && reference_image_urls.length > 0;
+            const merged = mergeStoryboardReferences([
+              { refs: [firstRef], labels: [layoutLabel] },
+              { refs: reference_image_urls, labels: reference_context_note },
+            ], refLimits.total);
+            reference_image_urls = merged.refs;
+            reference_context_note = merged.contextNote;
+            reference_source = hadReferences
+              ? (reference_source || 'mixed') + '+first-frame-layout-lock'
+              : 'auto-first-frame-for-last (layout lock)';
             log.info('[图生] 尾帧自动注入首帧作为站位锁参考', {
               id: imageGenId,
               first_ref: String(firstRef).slice(0, 80),
@@ -791,6 +793,7 @@ async function processImageGeneration(db, log, imageGenId) {
       if (sb) {
         const refs = [];
         const refLabels = [];
+        const coveredCharacterNames = new Set();
         if (sb.scene_id) {
           const scene = db.prepare('SELECT image_url, local_path, location FROM scenes WHERE id = ? AND deleted_at IS NULL').get(sb.scene_id);
           if (scene) {
@@ -856,6 +859,7 @@ async function processImageGeneration(db, log, imageGenId) {
             if (charRef) {
               refs.push(charRef);
               refLabels.push(`Image ${refs.length}: character appearance reference for "${c.name || 'character'}"${isPanel ? ' (front full-body view from history panel)' : ' (current character image)'}`);
+              if (c.name) coveredCharacterNames.add(String(c.name).trim().toLowerCase());
             }
           }
         }
@@ -868,7 +872,8 @@ async function processImageGeneration(db, log, imageGenId) {
               'SELECT name, image_url, local_path, ref_image, extra_images FROM props WHERE id = ? AND deleted_at IS NULL'
             ).get(Number(link.prop_id));
             if (!prop) continue;
-            let propRef = prop.ref_image || prop.local_path || prop.image_url;
+            // 与角色/场景一致：当前主图优先，上传的灵感参考图仅在尚无主图时使用。
+            let propRef = prop.local_path || prop.image_url || prop.ref_image;
             if (!propRef && prop.extra_images) {
               try {
                 const extras = typeof prop.extra_images === 'string' ? JSON.parse(prop.extra_images) : prop.extra_images;
@@ -893,18 +898,16 @@ async function processImageGeneration(db, log, imageGenId) {
         const restrictLibToExplicitSelection = explicitDramaCharIds !== null;
         try {
           const libLinks = db.prepare('SELECT character_id FROM storyboard_characters WHERE storyboard_id = ?').all(row.storyboard_id);
-          const coveredNames = new Set();
+          const coveredNames = coveredCharacterNames;
           for (const link of libLinks) {
             if (!imageClient.canAddStoryboardCharacterRef(refLabels, refLimits)) break;
             const lib = db.prepare(
               'SELECT id, name, four_view_image_url, image_url, local_path FROM character_libraries WHERE id = ? AND deleted_at IS NULL'
             ).get(link.character_id);
             if (!lib) continue;
-            if (restrictLibToExplicitSelection) {
-              const ln = String(lib.name || '').trim().toLowerCase();
-              if (!ln || !allowedLibNamesLower.has(ln)) continue;
-            }
-            if (coveredNames.has(lib.name)) continue;
+            const libName = String(lib.name || '').trim().toLowerCase();
+            if (restrictLibToExplicitSelection && (!libName || !allowedLibNamesLower.has(libName))) continue;
+            if (libName && coveredNames.has(libName)) continue;
             // 优先使用角色库当前主图（four_view_image_url → image_url → local_path），只有当前字段为空才降级使用历史 quad_panel_1 面板
             // 这样“重新生成角色四视图/主图”后，分镜图生成能立即取到最新图片
             let libRef = lib.four_view_image_url || lib.local_path || lib.image_url;
@@ -925,7 +928,7 @@ async function processImageGeneration(db, log, imageGenId) {
             if (libRef && !imageClient.refListHasCanonical(refs, libRef)) {
               refs.push(libRef);
               refLabels.push(`Image ${refs.length}: character appearance reference for "${lib.name || 'character'}"${isPanel ? ' (front full-body view from history panel)' : isFourView ? ' (four-view reference sheet)' : ' (character image)'}`);
-              coveredNames.add(lib.name);
+              if (libName) coveredNames.add(libName);
             }
           }
         } catch (_) {}
@@ -1005,27 +1008,16 @@ async function processImageGeneration(db, log, imageGenId) {
           skipStep23PromptCharFilter = true;
         }
         if (refs.length > 0) {
-          if (!reference_image_urls || reference_image_urls.length === 0) {
-            reference_image_urls = refs;
+          const hadReferences = reference_image_urls && reference_image_urls.length > 0;
+          const merged = mergeStoryboardReferences([
+            { refs: reference_image_urls, labels: reference_context_note },
+            { refs, labels: refLabels },
+          ], refLimits.total);
+          reference_image_urls = merged.refs;
+          reference_context_note = merged.contextNote;
+          if (!hadReferences) {
             reference_source = 'storyboard 自动解析';
-            if (refLabels.length > 0) {
-              reference_context_note = refLabels.slice(0, refs.length).join('\n');
-            }
           } else {
-            const mergedRefs = [...reference_image_urls];
-            const mergedLabels = (reference_context_note || '').split('\n').filter(Boolean);
-            for (let ri = 0; ri < refs.length; ri++) {
-              if (mergedRefs.length >= refLimits.total) break;
-              if (!imageClient.refListHasCanonical(mergedRefs, refs[ri])) {
-                mergedRefs.push(refs[ri]);
-                if (refLabels[ri]) mergedLabels.push(refLabels[ri]);
-              }
-            }
-            reference_image_urls = mergedRefs.slice(0, refLimits.total);
-            reference_context_note = mergedLabels
-              .slice(0, reference_image_urls.length)
-              .map((lbl, idx) => lbl.replace(/^Image\s+\d+/i, `Image ${idx + 1}`))
-              .join('\n');
             reference_source = (reference_source || 'mixed') + '+storyboard-refs';
             log.info('[图生] 已与既有参考图（如首帧站位锁）合并分镜角色/场景参考', {
               id: imageGenId,

@@ -2654,7 +2654,15 @@
     </el-dialog>
 
     <!-- AI 配置弹窗（不跳转，避免本页内容丢失） -->
-    <el-dialog v-model="showAiConfigDialog" title="AI 配置" width="90%" destroy-on-close class="ai-config-dialog">
+    <el-dialog
+      v-model="showAiConfigDialog"
+      title="AI 配置"
+      width="90%"
+      :close-on-click-modal="false"
+      :close-on-press-escape="false"
+      destroy-on-close
+      class="ai-config-dialog"
+    >
       <AIConfigContent v-if="showAiConfigDialog" />
     </el-dialog>
 
@@ -2699,6 +2707,7 @@ import { propLibraryAPI } from '@/api/propLibrary'
 import { generationSettingsAPI } from '@/api/prompts'
 import { parseScriptIntoEpisodes, episodesListToPlainScript } from '@/utils/scriptEpisodes'
 import { canUseUniversalOmniVideoApi } from '@/utils/videoOmniSupport'
+import { getMissingStoryboardImageSlots, generateMissingStoryboardImages } from '@/utils/storyboardImageGeneration'
 import { exportStoryboardSheet } from '@/utils/exportStoryboardSheet'
 import StylePickerButton from '@/components/StylePickerButton.vue'
 import AIConfigContent from '@/components/AIConfigContent.vue'
@@ -3807,6 +3816,26 @@ function hasSbImage(sb) {
   return !!(getSbImage(sb.id) || (sb && (sb.composed_image || sb.image_url)))
 }
 
+function getSbImageGenerationState(sb) {
+  const row = (store.storyboards || []).find((item) => item.id === sb.id) || sb
+  return {
+    useFirstLastFrame: storyboardUseFirstLastFrame.value && !isSbUniversalMode(sb.id),
+    hasImage: hasSbImage(row),
+    hasFirstImage: !!(getSbFirstImage(sb.id) || row.composed_image || row.image_url),
+    hasLastImage: !!getSbLastImage(sb.id),
+  }
+}
+
+function needsSbImageGeneration(sb) {
+  return getMissingStoryboardImageSlots(getSbImageGenerationState(sb)).length > 0
+}
+
+function isSbImageGenerating(sbId) {
+  return generatingSbImageIds.has(sbId) || generatingSbFirstImageIds.has(sbId) || generatingSbLastImageIds.has(sbId) ||
+    genStore.getAllRunningTasks().some((task) => Number(task.resourceId) === Number(sbId) &&
+      [GEN_RESOURCE.SB_IMAGE, GEN_RESOURCE.SB_FIRST_IMAGE, GEN_RESOURCE.SB_LAST_IMAGE].includes(task.resourceType))
+}
+
 function hasSbFirstLastPair(sb) {
   return !!(getSbFirstImage(sb.id) && getSbLastImage(sb.id))
 }
@@ -4355,8 +4384,89 @@ async function regenerateEditingFramePrompt() {
 // 兼容旧调用
 const showSbFramePromptPreview = openFramePromptEditor
 
+/** 批量和流水线共用：仅补缺失槽位，同一分镜先完成首帧再提交尾帧。 */
+async function generateMissingSbImages(sb, {
+  targetDramaId = dramaId.value,
+  style = getSelectedStyle(),
+  poll = pollTask,
+  beforeGenerate = async () => {},
+  shouldStop = () => false,
+} = {}) {
+  if (isSbImageGenerating(sb.id)) return { status: 'skipped' }
+  const useFirstLastFrame = getSbImageGenerationState(sb).useFirstLastFrame
+  const layoutLock = !!lastFrameUseFirstLayoutLock.value
+  const aspectRatio = projectAspectRatio.value || '16:9'
+  const singleFrameType = gridMode.value !== 'single' ? gridMode.value : undefined
+  const metaBase = buildSbGenMeta(sb, GEN_RESOURCE.SB_IMAGE, '分镜图')
+  const getState = () => ({ ...getSbImageGenerationState(sb), useFirstLastFrame })
+  return generateMissingStoryboardImages({
+    getState,
+    shouldStop,
+    generate: async (slot) => {
+      await beforeGenerate()
+      if (shouldStop()) return { status: 'stopped' }
+      if (isSbImageGenerating(sb.id)) return { status: 'skipped' }
+      const isLast = slot === 'last'
+      const loadingSet = slot === 'single' ? generatingSbImageIds : isLast ? generatingSbLastImageIds : generatingSbFirstImageIds
+      const label = slot === 'single' ? '分镜图' : isLast ? '尾帧' : '首帧'
+      const meta = {
+        ...metaBase,
+        dramaId: targetDramaId,
+        resourceType: slot === 'single' ? GEN_RESOURCE.SB_IMAGE : isLast ? GEN_RESOURCE.SB_LAST_IMAGE : GEN_RESOURCE.SB_FIRST_IMAGE,
+        label: metaBase.label.replace('分镜图 #', `${label} #`),
+      }
+      loadingSet.add(sb.id)
+      sb.errorMsg = ''
+      sb.error_msg = ''
+      try {
+        const prompt = slot === 'single'
+          ? sb.polished_prompt || sb.image_prompt || sb.description || ''
+          : await ensureProfessionalFramePrompt(sb, slot)
+        if (shouldStop()) return { status: 'stopped' }
+        const firstImage = isLast && layoutLock ? getSbFirstImage(sb.id) : null
+        const firstUrl = firstImage
+          ? assetImageUrl(firstImage) || firstImage.image_url || firstImage.local_path
+          : sb.composed_image || sb.image_url
+        genStore.markRunning(meta)
+        const res = await imagesAPI.create({
+          storyboard_id: sb.id,
+          drama_id: targetDramaId,
+          prompt,
+          style,
+          frame_type: slot === 'single' ? singleFrameType : frameTypeForSlot(slot),
+          aspect_ratio: aspectRatio,
+          reference_images: isLast && layoutLock && firstUrl ? [firstUrl] : undefined,
+          use_first_frame_layout_lock: isLast ? layoutLock : undefined,
+        })
+        if (res?.task_id) {
+          const result = await poll(res.task_id, () => loadSingleStoryboardMedia(sb.id), meta)
+          if (result?.paused) return result
+          if (result?.status !== 'completed') {
+            const error = result?.error || '生成失败'
+            sb.errorMsg = error
+            return { status: result?.status || 'failed', error }
+          }
+        } else {
+          await loadSingleStoryboardMedia(sb.id)
+          genStore.markDone(meta)
+        }
+        if (slot === 'last') delete sbSelectedLastImgId.value[sb.id]
+        if (slot === 'first') delete sbSelectedImgId.value[sb.id]
+        return { status: 'completed' }
+      } catch (e) {
+        const error = e.message || '提交失败'
+        sb.errorMsg = error
+        genStore.markFailed(meta, error)
+        return { status: 'failed', error }
+      } finally {
+        loadingSet.delete(sb.id)
+      }
+    },
+  })
+}
+
 async function onGenerateSbFrameImage(sb, slot) {
-  if (!dramaId.value || !sb?.id) return
+  if (!dramaId.value || !sb?.id || isSbImageGenerating(sb.id)) return
   const isLast = slot === 'last'
   const loadingSet = isLast ? generatingSbLastImageIds : generatingSbFirstImageIds
   const meta = buildSbGenMeta(
@@ -6954,60 +7064,37 @@ async function onInsertStoryboardBefore(sb) {
 
 async function startBatchImageGeneration() {
   if (!currentEpisodeId.value || batchImageRunning.value || pipelineRunning.value) return
+  const episodeAtStart = currentEpisodeId.value
+  const dramaAtStart = dramaId.value
+  const style = getSelectedStyle()
+  const scopeChanged = () => currentEpisodeId.value !== episodeAtStart || dramaId.value !== dramaAtStart
+  const shouldStop = () => batchImageStopping.value || scopeChanged()
   batchImageErrors.value = []
   batchImageStopping.value = false
   batchImageRunning.value = true
   try {
-    // 仅当媒体数据尚未加载时才全量拉取，避免点击时触发大量冗余请求
-    if (Object.keys(sbImages.value).length === 0) {
-      await loadStoryboardMedia()
-    }
-    const boards = store.storyboards || []
-    const todo = boards.filter((sb) => !hasSbImage(sb))
+    // 同时检查首帧和尾帧；已有首帧的分镜仍需补齐尾帧。
+    await loadStoryboardMedia()
+    if (shouldStop()) return
+    const todo = (store.storyboards || []).filter((sb) => needsSbImageGeneration(sb) && !isSbImageGenerating(sb.id))
     if (todo.length === 0) {
-      ElMessage.info('所有分镜均已有图片，无需重新生成')
+      ElMessage.info('没有待补全的分镜图片（图片已齐全，或正在生成）')
       return
     }
     batchImageProgress.value = { current: 0, total: todo.length, failed: 0 }
     const concurrency = pipelineConcurrency.value || 3
     let doneCount = 0
-
-    // 并发执行，使用与 pipeline 相同的并发模型
     let queueIdx = 0
     const worker = async () => {
-      while (queueIdx < todo.length) {
-        if (batchImageStopping.value) break
+      while (queueIdx < todo.length && !shouldStop()) {
         const sb = todo[queueIdx++]
-        const useFirstLast = storyboardUseFirstLastFrame.value && !isSbUniversalMode(sb.id)
         try {
-          let prompt = sb.polished_prompt || sb.image_prompt || sb.description || ''
-          let frameTypeForCreate = gridMode.value !== 'single' ? gridMode.value : undefined
-          if (useFirstLast) {
-            // 首尾帧模式下，批量生成分镜图也必须走专业首帧提示词（含 layout_description 空间合同、专用 system prompt 等）
-            prompt = await ensureProfessionalFramePrompt(sb, 'first')
-            frameTypeForCreate = 'storyboard_first'
-          }
-          const res = await imagesAPI.create({
-            storyboard_id: sb.id,
-            drama_id: dramaId.value,
-            prompt,
-            style: getSelectedStyle(),
-            frame_type: frameTypeForCreate,
-            aspect_ratio: projectAspectRatio.value || '16:9',
+          await generateMissingSbImages(sb, {
+            targetDramaId: dramaAtStart,
+            style,
+            shouldStop,
+            poll: (taskId, onDone, meta) => pollTask(taskId, onDone, meta, { silent: true }),
           })
-          if (res?.task_id) {
-            const pollRes = await pollTask(res.task_id, () => loadSingleStoryboardMedia(sb.id))
-            if (pollRes?.status === 'failed') {
-              batchImageErrors.value.push(`#${sb.storyboard_number ?? sb.id}: ${pollRes.error || '生成失败'}`)
-              batchImageProgress.value = { ...batchImageProgress.value, failed: batchImageProgress.value.failed + 1 }
-            }
-          } else {
-            await loadSingleStoryboardMedia(sb.id)
-          }
-          // 成功后清理手动选中，让服务器 first_frame_image_id 成为权威（与单条生成首帧的清理逻辑一致）
-          if (useFirstLast) {
-            delete sbSelectedImgId.value[sb.id]
-          }
         } catch (e) {
           batchImageErrors.value.push(`#${sb.storyboard_number ?? sb.id}: ${e.message || '提交失败'}`)
           batchImageProgress.value = { ...batchImageProgress.value, failed: batchImageProgress.value.failed + 1 }
@@ -7017,8 +7104,8 @@ async function startBatchImageGeneration() {
       }
     }
     await Promise.allSettled(Array.from({ length: Math.min(concurrency, todo.length) }, () => worker()))
+    if (scopeChanged()) return
     if (!batchImageStopping.value) {
-      // 最终统一恢复选中状态，确保所有首帧生成后服务器绑定立即生效（与单条生成路径一致）
       restoreSelectionsFromBackend()
       if (batchImageProgress.value.failed === 0) ElMessage.success(`分镜图批量生成完成（共 ${todo.length} 条）`)
       else ElMessage.warning(`批量完成，${batchImageProgress.value.failed}/${todo.length} 条失败`)
@@ -7735,41 +7822,19 @@ async function runOneClickPipeline(textOnly = false) {
     {
       await loadStoryboardMedia()
       boards = store.storyboards || []
-      const boardsWithoutImg = boards.filter((sb) => !hasSbImage(sb))
+      const boardsWithoutImg = boards.filter((sb) => needsSbImageGeneration(sb))
       const concurrency = pipelineConcurrency.value
       setPipelineStep(8, `生成分镜图（${boardsWithoutImg.length} 个，并发 ${concurrency}）...`)
       const { paused } = await runConcurrently(boardsWithoutImg, concurrency, async (sb) => {
         await checkPause()
-        generatingSbImageIds.add(sb.id)
-        try {
-          const stepName = '分镜图 #' + (sb.storyboard_number ?? sb.id)
-          const ok = await pipelineWithRetry(stepName, async () => {
-            const useFirstLast = storyboardUseFirstLastFrame.value && !isSbUniversalMode(sb.id)
-            let prompt = sb.polished_prompt || sb.image_prompt || sb.description || ''
-            let frameTypeForCreate = undefined
-            if (useFirstLast) {
-              prompt = await ensureProfessionalFramePrompt(sb, 'first')
-              frameTypeForCreate = 'storyboard_first'
-            }
-            const res = await imagesAPI.create({
-              storyboard_id: sb.id,
-              drama_id: dramaIdVal,
-              prompt,
-              model: undefined,
-              style,
-              frame_type: frameTypeForCreate,
-              aspect_ratio: projectAspectRatio.value || '16:9',
-            })
-            if (res?.task_id) {
-              const result = await pollTaskWithPause(res.task_id, () => loadSingleStoryboardMedia(sb.id))
-              if (result?.paused) return { paused: true }
-              if (result?.error) throw new Error(result.error)
-            } else await loadSingleStoryboardMedia(sb.id)
-          })
-          if (ok && typeof ok === 'object' && ok.paused) return { paused: true }
-        } finally {
-          generatingSbImageIds.delete(sb.id)
-        }
+        const stepName = '分镜图 #' + (sb.storyboard_number ?? sb.id)
+        const ok = await pipelineWithRetry(stepName, () => generateMissingSbImages(sb, {
+          targetDramaId: dramaIdVal,
+          style,
+          poll: pollTaskWithPause,
+          beforeGenerate: checkPause,
+        }))
+        if (ok && typeof ok === 'object' && ok.paused) return { paused: true }
       }, { getLabel: (sb) => '分镜图 #' + (sb.storyboard_number ?? sb.id) })
       if (paused) { await waitForResume() }
     }
@@ -8092,36 +8157,19 @@ async function runRepairPipeline() {
     }
     // 先拉取分镜图片/视频列表，再批量生成分镜图（并发）
     await loadStoryboardMedia()
-    const boardsWithoutImg = boards.filter((sb) => !hasSbImage(sb))
+    const boardsWithoutImg = boards.filter((sb) => needsSbImageGeneration(sb))
     {
       const concurrency = pipelineConcurrency.value
       pipelineCurrentStep.value = `正在生成分镜图（并发${concurrency}）...`
       const { paused } = await runConcurrently(boardsWithoutImg, concurrency, async (sb) => {
         await checkPause()
         const stepName = '分镜图 #' + (sb.storyboard_number ?? sb.id)
-        const ok = await pipelineWithRetry(stepName, async () => {
-          const useFirstLast = storyboardUseFirstLastFrame.value && !isSbUniversalMode(sb.id)
-          let prompt = sb.polished_prompt || sb.image_prompt || sb.description || ''
-          let frameTypeForCreate = undefined
-          if (useFirstLast) {
-            prompt = await ensureProfessionalFramePrompt(sb, 'first')
-            frameTypeForCreate = 'storyboard_first'
-          }
-          const res = await imagesAPI.create({
-            storyboard_id: sb.id,
-            drama_id: dramaIdVal,
-            prompt,
-            model: undefined,
-            style,
-            frame_type: frameTypeForCreate,
-            aspect_ratio: projectAspectRatio.value || '16:9',
-          })
-          if (res?.task_id) {
-            const result = await pollTaskWithPause(res.task_id, () => loadSingleStoryboardMedia(sb.id))
-            if (result?.paused) return { paused: true }
-            if (result?.error) throw new Error(result.error)
-          } else await loadSingleStoryboardMedia(sb.id)
-        })
+        const ok = await pipelineWithRetry(stepName, () => generateMissingSbImages(sb, {
+          targetDramaId: dramaIdVal,
+          style,
+          poll: pollTaskWithPause,
+          beforeGenerate: checkPause,
+        }))
         if (ok && typeof ok === 'object' && ok.paused) return { paused: true }
       }, { getLabel: (sb) => '分镜图 #' + (sb.storyboard_number ?? sb.id) })
       if (paused) { await waitForResume() }
@@ -8220,6 +8268,7 @@ function onAgentChanged(event) {
 window.addEventListener('lmd-agent-changed', onAgentChanged)
 
 onBeforeUnmount(() => {
+  batchImageStopping.value = true
   window.removeEventListener('lmd-agent-changed', onAgentChanged)
   agentContext.clear()
 })

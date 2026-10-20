@@ -7,7 +7,8 @@ const uploadService = require('./uploadService');
 const storageLayout = require('./storageLayout');
 const taskService = require('./taskService');
 const { loadConfig } = require('../config');
-const { postJSONWithTimeout } = require('./aiClient');
+const { postJSONWithTimeout, postBodyWithTimeout } = require('./aiClient');
+const { getOpenAIImageEditUrl, buildOpenAIImageEditRequest } = require('./openAIImageEdits');
 const { flattenModelIds, pickModelId } = require('./modelId');
 const seedance2AssetGuards = require('../utils/seedance2AssetGuards');
 
@@ -850,6 +851,7 @@ function qwenImageSize(size) {
 function resolveImageRef(value, filesBaseUrl, storageLocalPath) {
   if (!value || !String(value).trim()) return null;
   const s = String(value).trim();
+  if (/^data:image\//i.test(s)) return s;
   const baseUrl = (filesBaseUrl || '').replace(/\/$/, '');
   // isLocalhost: 只要 URL 本身或配置的 base_url 含 localhost/127，都视为本地
   const isLocalhostUrl = /localhost|127\.0\.0\.1/i.test(s);
@@ -874,7 +876,7 @@ function resolveImageRef(value, filesBaseUrl, storageLocalPath) {
     if (afterStatic) relPath = afterStatic.replace(/^\//, '');
     else return s;
   } else if (storageLocalPath) {
-    relPath = s.replace(/^\//, '');
+    relPath = s.replace(/^\/?static\//i, '').replace(/^\//, '');
   }
   if (!relPath) return toPublicUrl(s);
   const filePath = path.join(storageLocalPath, relPath);
@@ -1451,6 +1453,8 @@ async function callImageApi(db, log, opts) {
     storage_local_path,
     system_prompt,
     user_negative_prompt,
+    negative_prompt,
+    frame_identity_lock,
   } = opts;
   const preferredProvider = preferred_provider ?? opts.preferredProvider;
   const config = getDefaultImageConfig(db, preferredModel, preferredProvider, imageServiceType);
@@ -1475,10 +1479,16 @@ async function callImageApi(db, log, opts) {
     const refLines = String(system_prompt).split('\n').filter(l => /^Image\s+\d+:/i.test(l));
     if (refLines.length > 0) {
       const refHeader = refLines
-        .map(l => `[${l} — FOR REFERENCE ONLY, DO NOT copy its layout or framing]`)
+        .map(l => /LAYOUT[_ -]?LOCK|first frame.*(?:layout|position)/i.test(l)
+          ? `[${l} — PRESERVE its camera, composition, character positions and spatial layout]`
+          : `[${l} — use its depicted appearance, DO NOT copy its layout or framing]`)
         .join('\n');
       effectivePrompt = `${refHeader}\n\n[GENERATE THIS SCENE — single continuous image, no grid, no split panels]:\n${effectivePrompt}`;
     }
+  }
+  const hasCharacterReferences = /^Image\s+\d+:.*character appearance/im.test(String(system_prompt || ''));
+  if (Array.isArray(reference_image_urls) && reference_image_urls.length > 0 && (frame_identity_lock || hasCharacterReferences)) {
+    effectivePrompt += '\n\n[CHARACTER IDENTITY LOCK]: Use the SAME people shown in their mapped character reference images. Preserve each person\'s face, age, facial proportions, hairstyle, hair color, headwear, body build, clothing and costume details. The reference images take priority over contradictory invented appearance in the scene description. Change only the requested pose, expression and action. Scene and prop references must not replace a character\'s identity; keep different characters distinct. For a last frame, preserve identities from the first frame as well.';
   }
 
   log.info('[图生] callImageApi 路由', {
@@ -1499,7 +1509,8 @@ async function callImageApi(db, log, opts) {
   // Seedream/Volcengine 模型强制启用安全词负面提示，其他模型仅在多参考图时启用
   const isVolcOrSeedream = (protocol === 'volcengine' || /seedream|doubao/i.test(model));
   const autoNegativePrompt = (refCountForNeg > 1 || isVolcOrSeedream) ? ANTI_SPLIT_NEGATIVE_PROMPT : '';
-  const userNegFragment = (user_negative_prompt && String(user_negative_prompt).trim()) || '';
+  const userNegFragment = [...new Set([user_negative_prompt, negative_prompt]
+    .map(value => String(value || '').trim()).filter(Boolean))].join(', ');
   const mergedNegativePrompt = mergeNegativePromptFragments(autoNegativePrompt, userNegFragment);
 
   if (protocol === 'dashscope') {
@@ -1532,7 +1543,7 @@ async function callImageApi(db, log, opts) {
 
   if (protocol === 'gemini') {
     return callGeminiImageApi(db, config, log, {
-      prompt, model, size, image_gen_id,          // Gemini 用原始 prompt，不注入文字标签
+      prompt: effectivePrompt, model, size, image_gen_id, // Gemini 不注入重复标签，仍保留身份约束
       reference_image_urls: opts.reference_image_urls,
       files_base_url: opts.files_base_url,
       storage_local_path: opts.storage_local_path,
@@ -1588,8 +1599,12 @@ async function callImageApi(db, log, opts) {
       },
     } : {}),
   };
+  const editUrl = !isSeedream && !isAgnes && resolvedRefs.length > 0
+    ? getOpenAIImageEditUrl(url, model) : null;
+  const requestUrl = editUrl || url;
   log.info('Image API request', {
-    url: url.slice(0, 60),
+    url: requestUrl.slice(0, 60),
+    request_format: editUrl ? 'multipart-image-edit' : 'json',
     model,
     image_gen_id,
     has_ref_images: resolvedRefs.length > 0,
@@ -1605,11 +1620,19 @@ async function callImageApi(db, log, opts) {
   let raw;
   let httpStatus;
   try {
-    const out = await postJSONWithTimeout(url, openaiCompatHeaders, body, IMAGE_HTTP_TIMEOUT_MS);
+    let out;
+    if (editUrl) {
+      const upload = await buildOpenAIImageEditRequest(body, resolvedRefs);
+      out = await postBodyWithTimeout(editUrl, {
+        ...openaiCompatHeaders, 'Content-Type': upload.contentType,
+      }, upload.body, IMAGE_HTTP_TIMEOUT_MS);
+    } else {
+      out = await postJSONWithTimeout(url, openaiCompatHeaders, body, IMAGE_HTTP_TIMEOUT_MS);
+    }
     httpStatus = out.statusCode;
     raw = out.raw;
   } catch (e) {
-    log.error('Image API network error', { image_gen_id, error: e.message, url: url.slice(0, 80) });
+    log.error('Image API network error', { image_gen_id, error: e.message, url: requestUrl.slice(0, 80) });
     return { error: e.message && e.message.includes('timeout')
       ? e.message
       : ('图片生成网络请求失败: ' + e.message) };

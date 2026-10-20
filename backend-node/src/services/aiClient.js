@@ -65,11 +65,12 @@ function postJSONNonStream(url, headers, body, timeoutMs = 120000) {
  * 避免 undici fetch 在慢链路或大包体（多参考图 base64）下长时间挂起后以模糊的 fetch failed 结束。
  * @returns {Promise<{ statusCode: number, raw: string }>}
  */
-function postJSONWithTimeout(url, headers, body, timeoutMs = 600000) {
+/** 长请求原始数据 POST；调用方提供与数据匹配的 Content-Type。 */
+function postBodyWithTimeout(url, headers, body, timeoutMs = 600000) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
     const mod = parsed.protocol === 'https:' ? https : http;
-    const bodyStr = typeof body === 'string' ? body : JSON.stringify(body);
+    const bodyStr = Buffer.isBuffer(body) ? body : String(body);
     const reqHeaders = {
       'Content-Type': 'application/json',
       'Content-Length': Buffer.byteLength(bodyStr),
@@ -110,6 +111,11 @@ function postJSONWithTimeout(url, headers, body, timeoutMs = 600000) {
     req.write(bodyStr);
     req.end();
   });
+}
+
+function postJSONWithTimeout(url, headers, body, timeoutMs = 600000) {
+  const payload = typeof body === 'string' ? body : JSON.stringify(body);
+  return postBodyWithTimeout(url, headers, payload, timeoutMs);
 }
 
 /**
@@ -845,6 +851,7 @@ module.exports = {
   EXTRACT_PROMPTS,
   isRefusalResponse,
   postJSONWithTimeout,
+  postBodyWithTimeout,
   isMaxTokensParamError,
   parseMaxTokensLimitFromError,
   resolveArkTextModel,

@@ -143,7 +143,14 @@
     </el-dialog>
 
     <!-- AI 配置弹窗 -->
-    <el-dialog v-model="showAiConfigDialog" title="AI 配置" width="90%" destroy-on-close>
+    <el-dialog
+      v-model="showAiConfigDialog"
+      title="AI 配置"
+      width="90%"
+      :close-on-click-modal="false"
+      :close-on-press-escape="false"
+      destroy-on-close
+    >
       <AIConfigContent v-if="showAiConfigDialog" />
     </el-dialog>
 

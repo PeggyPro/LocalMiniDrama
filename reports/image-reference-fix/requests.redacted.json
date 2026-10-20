@@ -1,0 +1,55 @@
+[
+  {
+    "case": "02-character-reference",
+    "endpoint": "/images/edits",
+    "encoding": "multipart/form-data",
+    "fields": [
+      "model",
+      "prompt",
+      "n",
+      "size",
+      "input_fidelity",
+      "image"
+    ],
+    "model": "gpt-image-2.5-sunburst",
+    "inputFidelity": "high",
+    "requestBytes": 2785084,
+    "referenceCount": 1,
+    "references": [
+      {
+        "encoding": "file",
+        "mimeType": "image/png",
+        "bytes": 2783149,
+        "sha256": "c459a200549333e28bf48822088eed66d9359b9fb768354f97b8f77763332f99"
+      }
+    ],
+    "prompt": "[Image 1: character appearance (徐牧), the same face, hair, headwear and costume — use its depicted appearance, DO NOT copy its layout or framing]\r\n\r\n[GENERATE THIS SCENE — single continuous image, no grid, no split panels]:\r\nGenerate one cinematic photorealistic movie frame of the same main character shown in the supplied reference, crouching inside a rustic wooden cattle shed. He raises his right hand near his face and looks closely at his fingertips. Preserve the reference character's face, headwear, hairstyle, clothing, fabric, and accessories. Single continuous scene, natural cinematic light, 16:9 composition, no collage, no split panels, no reference sheet. If no reference image is attached, still draw the scene.\r\n\r\n[CHARACTER IDENTITY LOCK]: Use the SAME people shown in their mapped character reference images. Preserve each person's face, age, facial proportions, hairstyle, hair color, headwear, body build, clothing and costume details. The reference images take priority over contradictory invented appearance in the scene description. Change only the requested pose, expression and action. Scene and prop references must not replace a character's identity; keep different characters distinct. For a last frame, preserve identities from the first frame as well.",
+    "referenceBytesVerified": true,
+    "httpStatus": 200,
+    "elapsedMs": 24422,
+    "responseFields": [
+      "created",
+      "background",
+      "data",
+      "output_format",
+      "quality",
+      "safety_identifier",
+      "size",
+      "usage"
+    ],
+    "outputCount": 1,
+    "usage": {
+      "input_tokens": 1805,
+      "input_tokens_details": {
+        "image_tokens": 1536,
+        "text_tokens": 269
+      },
+      "output_tokens": 301,
+      "output_tokens_details": {
+        "image_tokens": 301,
+        "text_tokens": 0
+      },
+      "total_tokens": 2106
+    }
+  }
+]

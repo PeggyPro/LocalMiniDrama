@@ -1,0 +1,34 @@
+{
+  "configuration": "Sub2Api 分镜图",
+  "provider": "Sub2Api",
+  "protocol": "openai",
+  "endpoint": "/images/generations",
+  "model": "gpt-image-2.5-sunburst",
+  "character": {
+    "id": 4,
+    "name": "徐牧",
+    "width": 1536,
+    "height": 1024,
+    "sha256": "c459a200549333e28bf48822088eed66d9359b9fb768354f97b8f77763332f99"
+  },
+  "referenceMarker": "1D0A5E",
+  "maximumGenerationRequests": 1,
+  "liveGenerationEnabled": true,
+  "captureOnly": false,
+  "editsOnly": false,
+  "caseId": "02-character-reference",
+  "usesBusinessImageClient": true,
+  "databaseReadOnly": true,
+  "credentialsSaved": false,
+  "results": [
+    {
+      "id": "02-character-reference",
+      "status": "generated",
+      "filename": "02-character-reference.png",
+      "elapsedMs": 24972,
+      "width": 1672,
+      "height": 941,
+      "sha256": "bae1204b9bf46ab47892fc8aa0463a6fee5d374c21ebaef5dbb42379e2f31ab0"
+    }
+  ]
+}
