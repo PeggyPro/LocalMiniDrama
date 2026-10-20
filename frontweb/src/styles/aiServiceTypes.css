@@ -1,5 +1,6 @@
 /* Shared by AI configuration type badges and model information cards. */
-.ai-service-type {
+.ai-service-type,
+html.light .ai-service-type {
   background-color: var(--ai-service-background, rgba(148, 163, 184, 0.1));
   color: var(--ai-service-color, #64748b);
   border-color: var(--ai-service-border, rgba(148, 163, 184, 0.25));
