@@ -7,24 +7,6 @@
           <span class="logo-main">本地短剧助手</span>
           <span class="logo-sub">LocalMiniDrama</span>
         </h1>
-        <span class="breadcrumb-sep">›</span>
-        <span class="page-title">{{ dramaId ? (store.drama?.title || '项目') : '新建故事' }}</span>
-        <el-select
-          v-if="dramaId"
-          v-model="selectedEpisodeId"
-          class="header-episode-select"
-          placeholder="选择集数"
-          size="small"
-          style="width: 130px"
-          @change="onEpisodeSelect"
-        >
-          <el-option
-            v-for="ep in (store.drama?.episodes || [])"
-            :key="ep.id"
-            :label="ep.title || '第' + (ep.episode_number || 0) + '集'"
-            :value="ep.id"
-          />
-        </el-select>
         <el-button v-if="dramaId" class="btn-back-drama" @click="router.push('/drama/' + dramaId)">
           <el-icon><ArrowLeft /></el-icon>
           返回剧集
@@ -8631,35 +8613,6 @@ html.light .logo-main {
 html.light .logo-sub {
   color: #9ca3af;
   -webkit-text-fill-color: #9ca3af;
-}
-.breadcrumb-sep {
-  color: #3a3a44;
-  font-size: 0.9rem;
-  font-weight: 300;
-  flex-shrink: 0;
-  user-select: none;
-}
-html.light .breadcrumb-sep { color: #d1d5db; }
-.page-title {
-  font-size: 0.82rem;
-  font-weight: 500;
-  color: #7a7a88;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  border-radius: 6px;
-  padding: 4px 12px;
-  max-width: 220px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-html.light .page-title {
-  color: #6b7280;
-  background: rgba(99, 102, 241, 0.04);
-  border-color: rgba(99, 102, 241, 0.1);
-}
-.header-episode-select {
-  flex-shrink: 0;
 }
 .btn-back-drama {
   flex-shrink: 0;
