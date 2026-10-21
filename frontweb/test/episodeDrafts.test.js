@@ -47,6 +47,86 @@ test('dirty refresh preserves every local field and signals newest remote confli
   assert.equal(mergeEpisodeDraft(draft, episode()), draft)
 })
 
+test('revision-only refresh rebases a dirty draft without reporting a content conflict', () => {
+  const draft = editEpisodeDraft(createEpisodeDraft(episode()), { sourceText: '本地原文', scriptContent: '本地剧本' })
+  const merged = mergeEpisodeDraft(draft, episode(3))
+  assert.equal(merged.sourceText, '本地原文')
+  assert.equal(merged.scriptContent, '本地剧本')
+  assert.equal(merged.baseRevision, 3)
+  assert.equal(merged.baseSnapshot.sourceText, '小说原文')
+  assert.equal(merged.baseSnapshot.scriptContent, '原稿')
+  assert.equal(merged.dirty, true)
+  assert.equal(merged.remoteConflict, false)
+  assert.equal(merged.remoteRevision, null)
+  assert.equal(mergeEpisodeDraft(merged, episode(2)), merged)
+})
+
+test('a refresh matching the local draft recognizes that its content is already saved', () => {
+  const local = { title: '新标题', sourceText: '新原文', description: '', scriptContent: '新剧本' }
+  const draft = editEpisodeDraft(createEpisodeDraft(episode()), local)
+  const saved = mergeEpisodeDraft(draft, episode(2, {
+    title: local.title, source_text: local.sourceText, description: local.description, script_content: local.scriptContent,
+  }))
+  assert.deepEqual(snapshotEpisodeDraft(saved), { ...local, baseRevision: 2 })
+  assert.equal(saved.dirty, false)
+  assert.equal(saved.remoteConflict, false)
+})
+
+test('non-overlapping server and local edits merge without dropping either side', () => {
+  const draft = editEpisodeDraft(createEpisodeDraft(episode()), { sourceText: '本地原文', description: '' })
+  const merged = mergeEpisodeDraft(draft, episode(2, { title: '服务器标题', script_content: 'AI生成剧本' }))
+  assert.deepEqual(snapshotEpisodeDraft(merged), {
+    title: '服务器标题', sourceText: '本地原文', description: '', scriptContent: 'AI生成剧本', baseRevision: 2,
+  })
+  assert.equal(merged.baseSnapshot.sourceText, '小说原文')
+  assert.equal(merged.baseSnapshot.scriptContent, 'AI生成剧本')
+  assert.equal(merged.dirty, true)
+  assert.equal(merged.remoteConflict, false)
+})
+
+test('different changes to the same field still require an explicit conflict choice', () => {
+  for (const [field, serverField] of [
+    ['title', 'title'], ['sourceText', 'source_text'], ['description', 'description'], ['scriptContent', 'script_content'],
+  ]) {
+    for (const localValue of ['本地修改', '']) {
+      const draft = editEpisodeDraft(createEpisodeDraft(episode()), { [field]: localValue })
+      const conflict = mergeEpisodeDraft(draft, episode(2, { [serverField]: '服务器修改' }))
+      assert.equal(conflict[field], localValue)
+      assert.equal(conflict.baseRevision, 1)
+      assert.equal(conflict.remoteRevision, 2)
+      assert.equal(conflict.remoteConflict, true)
+      assert.deepEqual(conflict.baseSnapshot, draft.baseSnapshot)
+    }
+  }
+})
+
+test('persisted false conflicts clear on refresh without discarding the unsaved draft', () => {
+  const draft = { ...editEpisodeDraft(createEpisodeDraft(episode()), { scriptContent: '保留未保存剧本' }), remoteConflict: true, remoteRevision: 3 }
+  const session = storage()
+  persistEpisodeDrafts({ '1:7': draft }, session)
+  const restored = loadEpisodeDrafts(session)['1:7']
+  assert.equal(mergeEpisodeDraft(restored, episode(2)), restored, 'older remote observations remain ignored')
+  const refreshed = mergeEpisodeDraft(restored, episode(3))
+  assert.equal(refreshed.scriptContent, '保留未保存剧本')
+  assert.equal(refreshed.dirty, true)
+  assert.equal(refreshed.baseRevision, 3)
+  assert.equal(refreshed.remoteConflict, false)
+  assert.equal(refreshed.remoteRevision, null)
+})
+
+test('a real conflict clears when the latest server content converges or returns to the baseline', () => {
+  const draft = editEpisodeDraft(createEpisodeDraft(episode()), { scriptContent: '本地稿' })
+  const conflict = mergeEpisodeDraft(draft, episode(2, { script_content: '远端稿' }))
+  const converged = mergeEpisodeDraft(conflict, episode(3, { script_content: '本地稿' }))
+  assert.equal(converged.remoteConflict, false)
+  assert.equal(converged.dirty, false)
+  const reverted = mergeEpisodeDraft(conflict, episode(3))
+  assert.equal(reverted.scriptContent, '本地稿')
+  assert.equal(reverted.baseRevision, 3)
+  assert.equal(reverted.remoteConflict, false)
+  assert.equal(reverted.dirty, true)
+})
+
 test('save acknowledges the submitted snapshot while preserving typing during the save', () => {
   const submitted = editEpisodeDraft(createEpisodeDraft(episode()), { title: '提交标题', sourceText: '提交原文', scriptContent: '提交稿' })
   const snapshot = snapshotEpisodeDraft(submitted)
@@ -75,7 +155,7 @@ test('older save responses and acknowledgements without a submitted snapshot can
 
 test('a newer remote version remains conflicted after an earlier save acknowledgement', () => {
   const draft = editEpisodeDraft(createEpisodeDraft(episode()), { scriptContent: '提交稿' })
-  const conflict = mergeEpisodeDraft(draft, episode(3))
+  const conflict = mergeEpisodeDraft(draft, episode(3, { script_content: '更新的远端稿' }))
   const ack = acknowledgeEpisodeDraft(conflict, episode(2, { script_content: '提交稿' }), snapshotEpisodeDraft(draft))
   assert.equal(ack.baseRevision, 2)
   assert.equal(ack.remoteRevision, 3)

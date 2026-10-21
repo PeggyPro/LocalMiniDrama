@@ -2,6 +2,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { parse, compileScript } from 'vue/compiler-sfc'
+import { createPinia, setActivePinia } from 'pinia'
+import { useFilmStore } from '../src/stores/film.js'
 import { captureEpisodeScope, prepareEpisodeImport } from '../src/utils/episodeOperations.js'
 import { generateEpisodeStory } from '../src/utils/episodeStoryGeneration.js'
 
@@ -46,6 +48,60 @@ test('a single episode save keeps chapter headings as text and never replaces th
   assert.deepEqual(patch, ['patch', 7, 22, { title: '第二集', source_text: '小说完整原文', description: '第二集要求', script_content: content, expected_revision: 5 }])
   assert.equal(result.episodeId, 22)
   assert.equal(calls.filter(([kind]) => kind === 'patch').length, 1)
+})
+
+test('save after a revision-only refresh uses the latest version and preserves the actual store draft', async () => {
+  setActivePinia(createPinia())
+  const store = useFilmStore()
+  const original = { id: 22, revision: 1, title: '集标题', source_text: '原文', description: '要求', script_content: '剧本' }
+  store.setDrama({ id: 7, episodes: [original] })
+  store.setCurrentEpisode(original)
+  const edits = { title: '本地标题', sourceText: '本地原文', description: '', scriptContent: '本地剧本' }
+  store.updateEpisodeDraft(7, 22, edits)
+  const draft = store.currentEpisodeDraft
+  const refreshed = { ...original, revision: 3 }
+  store.setDrama({ id: 7, episodes: [refreshed] })
+  store.setCurrentEpisode(refreshed)
+  assert.equal(store.currentEpisodeDraft, draft)
+  const calls = []
+  const { saveScriptToBackend } = handlers(['saveScriptToBackend'], {
+    store, ensureCurrentEpisode: async () => store.currentEpisode, captureCurrentScope: () => () => true,
+    dramaAPI: { async updateEpisode(did, eid, body) {
+      calls.push([did, eid, body])
+      return { ...refreshed, title: body.title, source_text: body.source_text,
+        description: body.description, script_content: body.script_content, revision: 4 }
+    } },
+    reviewEpisodeKeys: new Set(), loadDrama: async () => {},
+  })
+  await saveScriptToBackend(store.scriptContent)
+  assert.deepEqual(calls, [[7, 22, {
+    title: edits.title, source_text: edits.sourceText, description: '', script_content: edits.scriptContent, expected_revision: 3,
+  }]])
+  assert.equal(store.currentEpisodeDraft, draft)
+  for (const [key, value] of Object.entries(edits)) assert.equal(draft[key], value)
+  assert.equal(draft.baseRevision, 4)
+  assert.equal(draft.dirty, false)
+  assert.equal(draft.remoteConflict, false)
+})
+
+test('save with conflicting script edits preserves the draft and cannot overwrite the server', async () => {
+  setActivePinia(createPinia())
+  const store = useFilmStore()
+  const original = { id: 22, revision: 1, title: '集标题', source_text: '原文', description: '', script_content: '剧本' }
+  store.setDrama({ id: 7, episodes: [original] })
+  store.setCurrentEpisode(original)
+  store.setScriptContent('本地修改')
+  const refreshed = { ...original, revision: 2, script_content: '服务器修改' }
+  store.setDrama({ id: 7, episodes: [refreshed] })
+  store.setCurrentEpisode(refreshed)
+  const { saveScriptToBackend } = handlers(['saveScriptToBackend'], {
+    store, ensureCurrentEpisode: async () => store.currentEpisode, captureCurrentScope: () => () => true,
+    dramaAPI: { updateEpisode() { assert.fail('unresolved conflicts must not reach the save API') } },
+  })
+  await assert.rejects(saveScriptToBackend(store.scriptContent), /内容冲突/)
+  assert.equal(store.scriptContent, '本地修改')
+  assert.equal(store.currentEpisode.script_content, '服务器修改')
+  assert.equal(store.currentEpisodeDraft.remoteConflict, true)
 })
 
 test('switching while the save prepares cannot patch either the old or new episode', async () => {

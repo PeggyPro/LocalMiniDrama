@@ -208,6 +208,22 @@
                   <el-input :model-value="store.drama.description" type="textarea" :rows="3" readonly style="margin-top: 8px" />
                   <span class="section-desc">在剧集信息中编辑全剧背景。</span>
                 </details>
+                <el-alert v-if="episodeDraft?.remoteConflict" type="warning" :closable="false" show-icon style="margin-bottom: 12px">
+                  本集草稿与服务器修改了同一项内容，已保留你的草稿。请核对后选择要保留的版本。
+                  <el-button link type="primary" @click="showServerScript = !showServerScript">{{ showServerScript ? '收起服务器版本' : '查看服务器版本' }}</el-button>
+                  <el-button link type="primary" @click="adoptLocalDraft">保留草稿并保存</el-button>
+                  <el-button link type="warning" @click="useServerDraft">采用服务器版本</el-button>
+                </el-alert>
+                <div v-if="showServerScript && episodeDraft?.remoteConflict" style="margin-bottom: 12px">
+                  <p class="section-desc">服务器版本 · 集标题</p>
+                  <el-input :model-value="currentEpisode?.title || ''" readonly />
+                  <p class="section-desc">服务器版本 · 本集原文</p>
+                  <el-input :model-value="currentEpisode?.source_text || ''" type="textarea" :rows="4" readonly />
+                  <p class="section-desc">服务器版本 · 改编要求</p>
+                  <el-input :model-value="currentEpisode?.description || ''" type="textarea" :rows="2" readonly />
+                  <p class="section-desc">服务器版本 · 本集剧本</p>
+                  <el-input :model-value="currentEpisode?.script_content || ''" type="textarea" :rows="6" readonly />
+                </div>
                 <h3 class="preview-block-title">本集原文</h3>
                 <p class="section-desc">小说或原始素材保存在这里，生成剧本时不会改动原文。</p>
                 <el-input
@@ -276,20 +292,6 @@
                   aria-label="本集剧本"
                   class="story-textarea"
                 />
-                <el-alert v-if="episodeDraft?.remoteConflict" type="warning" :closable="false" show-icon style="margin-top: 8px">
-                  本集在服务器上有更新，已保留你的草稿。请核对原文、改编要求和剧本的最新版本后再决定采用哪一份。
-                  <el-button link type="primary" @click="showServerScript = !showServerScript">{{ showServerScript ? '收起服务器版本' : '查看服务器版本' }}</el-button>
-                  <el-button link type="primary" @click="adoptLocalDraft">保留草稿并保存</el-button>
-                  <el-button link type="warning" @click="useServerDraft">采用服务器版本</el-button>
-                </el-alert>
-                <div v-if="showServerScript && episodeDraft?.remoteConflict" style="margin-top: 8px">
-                  <p class="section-desc">服务器版本 · 本集原文</p>
-                  <el-input :model-value="currentEpisode?.source_text || ''" type="textarea" :rows="4" readonly />
-                  <p class="section-desc">服务器版本 · 改编要求</p>
-                  <el-input :model-value="currentEpisode?.description || ''" type="textarea" :rows="2" readonly />
-                  <p class="section-desc">服务器版本 · 本集剧本</p>
-                  <el-input :model-value="currentEpisode?.script_content || ''" type="textarea" :rows="6" readonly />
-                </div>
                 <el-alert v-if="scriptNeedsReview" type="info" :closable="false" show-icon style="margin-top: 8px">剧本已更新，已有分镜和素材会保留，请检查是否需要重新生成。</el-alert>
                 <div v-if="generationCandidate" style="margin-top: 12px">
                   <p>生成期间本集已被修改，生成结果已保留为候选，未覆盖当前剧本。</p>
@@ -5218,7 +5220,7 @@ async function saveScriptToBackend(content) {
     store.updateEpisodeDraft(did, eid, { scriptContent: String(content) })
   }
   const snapshot = store.snapshotEpisodeDraft(did, eid)
-  if (store.getEpisodeDraft(did, eid)?.remoteConflict) throw new Error('本集有服务器更新，请先核对冲突版本')
+  if (store.getEpisodeDraft(did, eid)?.remoteConflict) throw new Error('本集存在内容冲突，请在上方提示中核对并选择要保留的版本')
   const previousContent = store.currentEpisode?.script_content || ''
   const saved = await dramaAPI.updateEpisode(did, eid, {
     title: snapshot.title, source_text: snapshot.sourceText, description: snapshot.description, script_content: snapshot.scriptContent,
@@ -5505,7 +5507,7 @@ async function prepareEpisodeProduction() {
   const isActive = captureCurrentScope()
   productionPreparing.value = true
   try {
-    if (episodeDraft.value?.remoteConflict) throw new Error('本集有服务器更新，请先核对冲突版本')
+    if (episodeDraft.value?.remoteConflict) throw new Error('本集存在内容冲突，请在上方提示中核对并选择要保留的版本')
     if (episodeDraft.value?.dirty) {
       const saved = await saveScriptToBackend(scriptContent.value)
       if (!saved || saved.scopeChanged || !isActive()) return false
@@ -5535,7 +5537,7 @@ async function onGenerateScript() {
     }
   } catch (error) {
     if (isActive()) {
-      ElMessage.error(error.message || '保存失败')
+      ElMessage.error({ message: error.message || '保存失败', grouping: true })
       if (error.code === 'REVISION_CONFLICT' || error.response?.status === 409) await loadDrama()
     }
   } finally {

@@ -62,7 +62,7 @@ export function editEpisodeDraft(draft, patch) {
   return next
 }
 
-/** Server refreshes may advance clean drafts, but must never replace local edits. */
+/** Compare local and server edits with their shared baseline before declaring a conflict. */
 export function mergeEpisodeDraft(draft, episode) {
   if (!draft) return createEpisodeDraft(episode)
   const incoming = createEpisodeDraft(episode)
@@ -71,7 +71,19 @@ export function mergeEpisodeDraft(draft, episode) {
   draft = hydrateLegacySource(draft, episode)
   if (!draft.dirty) return incoming
   if (incoming.baseRevision === draft.baseRevision) return draft
-  return { ...draft, remoteConflict: true, remoteRevision: incoming.baseRevision }
+  // Repeated saves can advance the revision without changing any content. Changes
+  // to different fields (e.g. local source and generated script) can also coexist.
+  const conflicts = EPISODE_DRAFT_FIELDS.some((key) =>
+    draft[key] !== draft.baseSnapshot[key]
+      && incoming[key] !== draft.baseSnapshot[key]
+      && draft[key] !== incoming[key])
+  if (conflicts) return { ...draft, remoteConflict: true, remoteRevision: incoming.baseRevision }
+  const next = { ...incoming }
+  for (const key of EPISODE_DRAFT_FIELDS) {
+    if (draft[key] !== draft.baseSnapshot[key]) next[key] = draft[key]
+  }
+  next.dirty = !sameFields(next, next.baseSnapshot)
+  return next
 }
 
 export function resolveEpisodeDraftConflict(draft, episode, choice) {
