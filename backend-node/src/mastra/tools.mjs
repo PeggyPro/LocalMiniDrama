@@ -7,13 +7,13 @@ function fail(error) {
 
 function dramaRow(db, dramaId) {
   return db.prepare(
-    'SELECT id, title, style, metadata, description FROM dramas WHERE id = ? AND deleted_at IS NULL'
+    'SELECT id, title, style, metadata, description, episodes_revision FROM dramas WHERE id = ? AND deleted_at IS NULL'
   ).get(Number(dramaId));
 }
 
 function listEpisodes(db, dramaId) {
   return db.prepare(
-    `SELECT id, episode_number, title FROM episodes
+    `SELECT id, episode_number, title, revision, description FROM episodes
      WHERE drama_id = ? AND deleted_at IS NULL
      ORDER BY episode_number ASC, id ASC`
   ).all(Number(dramaId));
@@ -46,11 +46,16 @@ export function executeGetCurrentProject(db, dramaId, episodeId) {
     aspectRatio = meta && meta.aspect_ratio ? meta.aspect_ratio : '';
   } catch (_) {}
 
+  let sourceText = '';
+  let sourceTextTruncated = false;
   let script = '';
   let scriptTruncated = false;
   let storyboards = [];
   if (resolvedId != null) {
-    const episode = db.prepare('SELECT script_content FROM episodes WHERE id = ?').get(resolvedId);
+    const episode = db.prepare('SELECT source_text, script_content FROM episodes WHERE id = ?').get(resolvedId);
+    const original = episode?.source_text ?? '';
+    sourceText = clip(original, 12000);
+    sourceTextTruncated = original.length > 12000;
     const full = episode && episode.script_content ? episode.script_content : '';
     script = clip(full, 12000);
     scriptTruncated = full.length > 12000;
@@ -92,8 +97,12 @@ export function executeGetCurrentProject(db, dramaId, episodeId) {
       title: drama.title,
       style: drama.style,
       aspectRatio,
-      episodes: episodes.map((ep) => ({ id: ep.id, number: ep.episode_number, title: ep.title })),
+      episodesRevision: drama.episodes_revision,
+      background: drama.description,
+      episodes: episodes.map((ep) => ({ id: ep.id, number: ep.episode_number, title: ep.title, revision: ep.revision, description: ep.description })),
       episodeSpecified,
+      sourceText,
+      sourceTextTruncated,
       script,
       scriptTruncated,
       characters,
@@ -103,39 +112,24 @@ export function executeGetCurrentProject(db, dramaId, episodeId) {
   };
 }
 
-export function executeSaveEpisodeScript(db, dramaId, episodeId, input) {
-  const drama = dramaRow(db, dramaId);
-  if (!drama) return fail('项目不存在');
-  const scriptContent = input && input.scriptContent != null ? String(input.scriptContent) : '';
-  const episodes = listEpisodes(db, dramaId);
-  let targetId = episodeId;
-  if (targetId == null || targetId === '') {
-    if (episodes.length === 0) {
-      const info = db.prepare(
-        `INSERT INTO episodes (drama_id, episode_number, title, script_content, description)
-         VALUES (?, 1, ?, ?, ?)`
-      ).run(Number(dramaId), (input && input.title) || '', scriptContent, (input && input.description) || null);
-      return { ok: true, id: Number(info.lastInsertRowid), summary: '已创建第 1 集并写入剧本' };
+export function executeSaveEpisodeScript(db, dramaId, episodeId, input = {}) {
+  return runTask(() => {
+    const revisions = requireService('episodeRevisionService');
+    revisions.getDrama(db, dramaId);
+    const fields = { script_content: input.scriptContent };
+    for (const key of ['title', 'description']) if (input[key] !== undefined) fields[key] = input[key];
+    if (input.sourceText !== undefined) fields.source_text = input.sourceText;
+    if (typeof fields.script_content !== 'string') return fail('scriptContent 必须为文本');
+    const episodes = listEpisodes(db, dramaId);
+    if ((episodeId == null || episodeId === '') && episodes.length === 0) {
+      const created = revisions.createEpisode(db, dramaId, { ...fields, expected_collection_revision: input.expectedCollectionRevision });
+      return { ok: true, id: created.id, revision: created.revision, episodesRevision: created.episodes_revision, summary: `已创建第 ${created.episode_number} 集并写入剧本` };
     }
-    if (episodes.length > 1) return fail('请指定哪一集');
-    targetId = episodes[0].id;
-  } else {
-    const resolved = resolveEpisode(db, dramaId, targetId);
+    const resolved = resolveEpisode(db, dramaId, episodeId);
     if (!resolved.ok) return resolved;
-    targetId = resolved.episodeId;
-  }
-  const existing = db.prepare('SELECT title, description FROM episodes WHERE id = ? AND drama_id = ?').get(targetId, Number(dramaId));
-  if (!existing) return fail('这一集不属于当前项目');
-  db.prepare(
-    `UPDATE episodes SET title = ?, script_content = ?, description = ? WHERE id = ? AND drama_id = ?`
-  ).run(
-    input && input.title != null ? input.title : existing.title,
-    scriptContent,
-    input && input.description != null ? input.description : existing.description,
-    targetId,
-    Number(dramaId)
-  );
-  return { ok: true, id: targetId, summary: '已保存剧本' };
+    const saved = revisions.updateEpisode(db, dramaId, resolved.episodeId, { ...fields, expected_revision: input.expectedRevision });
+    return { ok: true, id: saved.id, revision: saved.revision, episodesRevision: saved.episodes_revision, summary: '已保存剧本' };
+  });
 }
 
 function requireService(name) {
@@ -224,7 +218,18 @@ function runTask(fn) {
 }
 
 export function executeGenerateStory(db, log, dramaId, deps) {
-  return runTask(() => taskResult(deps.startStoryGeneration(db, log, { drama_id: Number(dramaId) }), '已开始生成剧本'));
+  return runTask(() => taskResult(deps.startStoryGeneration(db, log, {
+    drama_id: Number(dramaId), mode: 'replace', expected_collection_revision: dramaRow(db, dramaId)?.episodes_revision,
+  }), '已开始整剧批量生成剧本'));
+}
+
+export function executeGenerateEpisodeStory(db, log, dramaId, episodeId, input, deps) {
+  const episode = needEpisode(db, dramaId, episodeId);
+  if (!episode.ok) return episode;
+  return runTask(() => taskResult(deps.startEpisodeStoryGeneration(db, log, dramaId, episode.episodeId, {
+    premise: input.premise, expected_revision: input.expectedRevision,
+    title: input.title, reference_previous: input.referencePrevious,
+  }), '已开始生成本集剧本'));
 }
 
 export function executeGenerateCharacters(db, cfg, log, dramaId, episodeId, deps) {

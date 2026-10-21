@@ -2,7 +2,6 @@
 const taskService = require('./taskService');
 const aiClient = require('./aiClient');
 const promptI18n = require('./promptI18n');
-const { syncStoryboardCharacters } = require('./imageService');
 const safeJson = require('../utils/safeJson');
 const { safeParseAIJSON, extractJsonCandidate, repairTruncatedJsonArray, extractFirstArray } = safeJson;
 const loadConfig = require('../config').loadConfig;
@@ -386,11 +385,107 @@ function buildDramaCharacterAppearanceMap(characters) {
   return map;
 }
 
+/** 本集拥有或已经明确引用的资源；未关联的整剧资源不能进入生成上下文。 */
+function loadEpisodeResources(db, episode) {
+  const characterIds = new Set();
+  try {
+    const links = db.prepare('SELECT character_id FROM episode_characters WHERE episode_id = ?').all(episode.id);
+    for (const link of links) characterIds.add(Number(link.character_id));
+  } catch (err) {
+    if (!String(err.message).includes('no such table')) throw err;
+  }
+  const boards = db.prepare('SELECT id FROM storyboards WHERE episode_id = ? AND deleted_at IS NULL').all(episode.id);
+  for (const board of boards) {
+    for (const id of loadStoryboardCharacterIds(db, board.id)) characterIds.add(id);
+  }
+  const ids = [...characterIds].filter((id) => Number.isSafeInteger(id) && id > 0);
+  const characters = ids.length > 0 ? db.prepare(
+    `SELECT * FROM characters WHERE drama_id = ? AND deleted_at IS NULL
+     AND id IN (${ids.map(() => '?').join(',')}) ORDER BY name ASC, id ASC`
+  ).all(episode.drama_id, ...ids) : [];
+  const scenes = db.prepare(
+    `SELECT * FROM scenes WHERE drama_id = ? AND deleted_at IS NULL AND
+     (episode_id = ? OR id IN (SELECT scene_id FROM storyboards WHERE episode_id = ? AND deleted_at IS NULL))
+     ORDER BY location ASC, time ASC, id ASC`
+  ).all(episode.drama_id, episode.id, episode.id);
+  const props = db.prepare(
+    `SELECT * FROM props WHERE drama_id = ? AND deleted_at IS NULL AND
+     (episode_id = ? OR id IN (
+       SELECT sp.prop_id FROM storyboard_props sp
+       INNER JOIN storyboards sb ON sb.id = sp.storyboard_id
+       WHERE sb.episode_id = ? AND sb.deleted_at IS NULL
+     )) ORDER BY id ASC`
+  ).all(episode.drama_id, episode.id, episode.id);
+  return { characters, scenes, props };
+}
+
+function keepActiveResources(db, resources, dramaId) {
+  const result = {};
+  for (const table of ['characters', 'scenes', 'props']) {
+    const ids = resources[table].map((row) => row.id);
+    result[table] = ids.length > 0 ? db.prepare(
+      `SELECT * FROM ${table} WHERE drama_id = ? AND deleted_at IS NULL AND id IN (${ids.map(() => '?').join(',')})`
+    ).all(dramaId, ...ids) : [];
+  }
+  return result;
+}
+
+function limitStoryboardResources(sb, resources) {
+  const byId = new Map(resources.characters.map((c) => [Number(c.id), c]));
+  const byName = new Map(resources.characters.map((c) => [String(c.name).trim(), c]));
+  const seen = new Set();
+  sb.characters = (Array.isArray(sb.characters) ? sb.characters : []).flatMap((item) => {
+    const rawId = item != null && typeof item === 'object' ? item.id : item;
+    const id = Number(rawId);
+    const name = item != null && typeof item === 'object' ? item.name : item;
+    const character = Number.isSafeInteger(id) && id > 0 ? byId.get(id) : byName.get(String(name || '').trim());
+    if (!character || seen.has(character.id)) return [];
+    seen.add(character.id);
+    return [{ id: character.id, name: character.name }];
+  });
+  const sceneIds = new Set(resources.scenes.map((s) => Number(s.id)));
+  if (!sceneIds.has(Number(sb.scene_id))) sb.scene_id = null;
+  const propIds = new Set(resources.props.map((p) => Number(p.id)));
+  sb.props = [...new Set((Array.isArray(sb.props) ? sb.props : []).map(Number).filter((id) => propIds.has(id)))];
+}
+
+function syncEpisodeStoryboardCharacters(db, storyboardId, characters) {
+  const sb = db.prepare('SELECT * FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(storyboardId);
+  if (!sb) return { added: [] };
+  let current = [];
+  try { current = JSON.parse(sb.characters || '[]'); } catch (_) {}
+  if (!Array.isArray(current)) current = [];
+  const covered = new Set(current.map((c) => Number(c && typeof c === 'object' ? c.id : c)));
+  const scan = [sb.action, sb.dialogue, sb.result, sb.description].filter(Boolean).join(' ').toLowerCase();
+  const added = [];
+  for (const character of characters) {
+    if (!character.name || covered.has(Number(character.id)) || !scan.includes(character.name.toLowerCase())) continue;
+    current.push({ id: character.id, name: character.name });
+    covered.add(Number(character.id));
+    added.push(character.name);
+  }
+  if (added.length > 0) db.prepare('UPDATE storyboards SET characters = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL')
+    .run(JSON.stringify(current), new Date().toISOString(), storyboardId);
+  return { added };
+}
+
+function isValidStoryboardFromAi(sb) {
+  return sb && typeof sb === 'object' && !Array.isArray(sb) && normalizeStoryboardShotNumber(sb) > 0 &&
+    ['title', 'action', 'dialogue', 'narration', 'description', 'universal_segment_text']
+      .some((field) => typeof sb[field] === 'string' && sb[field].trim());
+}
+
+function retirePreviousStoryboards(db, episodeId, ids, now) {
+  const retire = db.prepare('UPDATE storyboards SET deleted_at = ? WHERE id = ? AND episode_id = ? AND deleted_at IS NULL');
+  for (const id of ids || []) retire.run(now, id, episodeId);
+}
+
 /**
  * 从 AI 输出的单个分镜对象计算入库字段（INSERT/UPDATE 共用）。
  * 会就地写入 sb.location / sb.time（由 scene_description 拆分）。
  */
 function deriveStoryboardFieldsFromAi(sb, style, videoRatio, opts = {}) {
+  if (opts.resources) limitStoryboardResources(sb, opts.resources);
   const universalOmni = !!opts.universalOmni;
   const angleValFn = (x) => x.angle ?? x.camera_angle ?? null;
   const shotNumber = normalizeStoryboardShotNumber(sb);
@@ -616,18 +711,22 @@ function tryIncrementalSave(db, log, episodeIdNum, accumulated, savedNums, style
     const items = Array.isArray(parsed) ? parsed : extractFirstArray(parsed);
     if (!items || items.length === 0) return;
     const now = new Date().toISOString();
-    let newCount = 0;
-    for (const sb of items) {
-      const shotNumber = normalizeStoryboardShotNumber(sb);
-      if (shotNumber > 0 && savedNums.has(shotNumber)) continue;
-      const id = insertOneStoryboard(db, episodeIdNum, sb, style, videoRatio, now, deriveOpts);
-      if (id !== null) {
-        savedNums.add(shotNumber);
-        newCount++;
+    const newlySaved = db.transaction(() => {
+      if (deriveOpts.assertCurrent) deriveOpts.assertCurrent();
+      const added = new Set();
+      for (const sb of items) {
+        if (!isValidStoryboardFromAi(sb)) continue;
+        const shotNumber = normalizeStoryboardShotNumber(sb);
+        if (savedNums.has(shotNumber) || added.has(shotNumber)) continue;
+        const id = insertOneStoryboard(db, episodeIdNum, sb, style, videoRatio, now, deriveOpts);
+        if (id !== null) added.add(shotNumber);
       }
-    }
-    if (newCount > 0) {
-      log.info('Storyboard incremental save', { episode_id: episodeIdNum, new_count: newCount, total_saved: savedNums.size });
+      if (added.size > 0) retirePreviousStoryboards(db, episodeIdNum, deriveOpts.previousStoryboardIds, now);
+      return added;
+    })();
+    for (const num of newlySaved) savedNums.add(num);
+    if (newlySaved.size > 0) {
+      log.info('Storyboard incremental save', { episode_id: episodeIdNum, new_count: newlySaved.size, total_saved: savedNums.size });
     }
   } catch (_) { /* 流式解析错误静默忽略，等待最终完整解析 */ }
 }
@@ -644,7 +743,7 @@ function saveStoryboards(db, log, episodeId, storyboards, cfg, styleOverride, sk
   const videoRatio = cfg?.style?.default_video_ratio || '16:9';
   const now = new Date().toISOString();
 
-  // 仅在非增量模式下才删除旧数据（增量模式时已在流式开始前删除）
+  // 非增量调用直接替换；异步生成传入 Set，并在有效保存后才归档旧行。
   if (skipShotNumbers === null) {
     const existing = db.prepare('SELECT id FROM storyboards WHERE episode_id = ? AND deleted_at IS NULL').all(episodeIdNum);
     if (existing.length > 0) {
@@ -859,27 +958,47 @@ ${lastCtx}
 ${originalUserPrompt}`;
 }
 
-async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, model, style, userPrompt, systemPrompt, includeNarration, universalOmni, targetClipDurationSec = null) {
-  // 增量保存状态放在 try 外，catch 里可用于部分恢复
+async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, model, style, userPrompt, systemPrompt, includeNarration, universalOmni, targetClipDurationSec = null, generationContext = null) {
+  // 增量保存状态放在 try 外，catch 里可用于部分恢复。
   const episodeIdNum = Number(episodeId);
   const streamSavedNums = new Set();
   const streamStyle = (style && String(style).trim()) || cfg?.style?.default_style || '';
   const streamVideoRatio = cfg?.style?.default_video_ratio || '16:9';
-  // 角色造型映射（#38）：流式增量入库同样需要，否则视频提示词丢失人物外貌
-  const streamEpisode = db.prepare('SELECT drama_id FROM episodes WHERE id = ? AND deleted_at IS NULL').get(episodeIdNum);
-  const characterAppearances = streamEpisode?.drama_id
-    ? buildDramaCharacterAppearanceMap(
-        db.prepare('SELECT id, name, appearance FROM characters WHERE drama_id = ? AND deleted_at IS NULL ORDER BY name ASC').all(streamEpisode.drama_id)
-      )
-    : {};
+  const taskIsActive = () => {
+    const task = taskService.getTask(db, taskId);
+    return task && (task.status === 'pending' || task.status === 'processing');
+  };
+  if (!taskIsActive()) return;
+  let assertCurrent = () => {};
   const deriveOpts = {
     universalOmni: !!universalOmni,
     targetClipDuration: targetClipDurationSec != null && Number(targetClipDurationSec) > 0 ? Number(targetClipDurationSec) : null,
-    characterAppearances,
   };
   let streamThrottle = 0;
 
   try {
+    const readEpisode = () => db.prepare(
+      `SELECT e.id, e.drama_id, e.script_content FROM episodes e
+       INNER JOIN dramas d ON d.id = e.drama_id AND d.deleted_at IS NULL
+       WHERE e.id = ? AND e.deleted_at IS NULL`
+    ).get(episodeIdNum);
+    const sourceEpisode = generationContext?.episode || readEpisode();
+    if (!sourceEpisode) throw new Error('剧集不存在或已删除');
+    const sourceResources = generationContext?.resources || loadEpisodeResources(db, sourceEpisode);
+    deriveOpts.previousStoryboardIds = db.prepare('SELECT id FROM storyboards WHERE episode_id = ? AND deleted_at IS NULL')
+      .all(episodeIdNum).map((row) => row.id);
+    assertCurrent = () => {
+      if (!taskIsActive()) throw new Error('分镜生成任务已取消或失效');
+      const current = readEpisode();
+      if (!current) throw new Error('剧集不存在或已删除');
+      if (current.drama_id !== sourceEpisode.drama_id || current.script_content !== sourceEpisode.script_content) {
+        throw new Error('剧本内容已变更，请重新生成分镜');
+      }
+      deriveOpts.resources = keepActiveResources(db, sourceResources, sourceEpisode.drama_id);
+      deriveOpts.characterAppearances = buildDramaCharacterAppearanceMap(deriveOpts.resources.characters);
+    };
+    deriveOpts.assertCurrent = assertCurrent;
+    assertCurrent();
     taskService.updateTaskStatus(db, taskId, 'processing', 10, '开始生成分镜头...');
     log.info('Processing storyboard generation', { task_id: taskId, episode_id: episodeId });
     log.info('Storyboard prompt preview', {
@@ -888,10 +1007,6 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
       user_prompt_head: userPrompt ? userPrompt.slice(0, 200) : '',
     });
     logDebugStoryboardPrompts(log, `task-${taskId}-initial`, userPrompt, systemPrompt);
-
-    // 提前删除旧分镜，为增量流式保存腾出位置
-    const deleteNow = new Date().toISOString();
-    db.prepare('UPDATE storyboards SET deleted_at = ? WHERE episode_id = ? AND deleted_at IS NULL').run(deleteNow, episodeIdNum);
 
     // 不使用 json_mode：response_format:json_object 要求返回 JSON 对象而非数组，会导致模型包装成
     // {"storyboards":[...]} 或产生乱码 key，改由 extractFirstArray 统一处理任意包装格式。
@@ -903,13 +1018,14 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
         streamThrottle = accumulated.length;
         tryIncrementalSave(db, log, episodeIdNum, accumulated, streamSavedNums, streamStyle, streamVideoRatio, deriveOpts);
         // 同步更新任务进度（根据已保存分镜数量）
-        if (streamSavedNums.size > 0) {
+        if (streamSavedNums.size > 0 && taskIsActive()) {
           taskService.updateTaskStatus(db, taskId, 'processing', 30,
             `已解析 ${streamSavedNums.size} 个分镜，生成中...`);
         }
       },
     });
 
+    assertCurrent();
     taskService.updateTaskStatus(db, taskId, 'processing', 50, '分镜头生成完成，正在解析结果...');
 
     log.info('AI raw response received', {
@@ -924,6 +1040,7 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
     try {
       const parsed = safeParseAIJSON(text, null, log, parseMeta);
       storyboards = extractFirstArray(parsed) || [];
+      if (!storyboards.every(isValidStoryboardFromAi)) throw new Error('分镜缺少有效镜号或内容');
     } catch (e) {
       log.error('Parse storyboard JSON failed', {
         error: e.message,
@@ -1006,6 +1123,7 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
 
       // 等待 3 秒后再发续写请求：避免流式请求刚结束服务端连接未释放导致 "socket hang up"
       await new Promise(r => setTimeout(r, 3000));
+      assertCurrent();
 
       let contText;
       try {
@@ -1022,11 +1140,13 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
         break;
       }
 
+      assertCurrent();
       const contMeta = {};
       let contItems = [];
       try {
         const contParsed = safeParseAIJSON(contText, null, log, contMeta);
         contItems = extractFirstArray(contParsed) || [];
+        if (!contItems.every(isValidStoryboardFromAi)) throw new Error('续写分镜缺少有效镜号或内容');
       } catch (e) {
         log.warn('Continuation parse failed', { task_id: taskId, attempt: contAttempt, error: e.message });
         break;
@@ -1065,15 +1185,23 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
     taskService.updateTaskStatus(db, taskId, 'processing', 70, '正在保存分镜头...');
 
     // 传入 streamSavedNums：已增量保存的项目直接从 DB 读取，跳过重复 INSERT
-    const saved = saveStoryboards(db, log, episodeId, storyboards, cfg, style, streamSavedNums, deriveOpts);
+    const saved = db.transaction(() => {
+      assertCurrent();
+      const rows = saveStoryboards(db, log, episodeId, storyboards, cfg, style, streamSavedNums, deriveOpts);
+      if (rows.length === 0) throw new Error('未能保存有效分镜');
+      retirePreviousStoryboards(db, episodeIdNum, deriveOpts.previousStoryboardIds, new Date().toISOString());
+      return rows;
+    })();
 
     // ── 分镜角色补全（字符串匹配，无 AI，极快）──────────────────────────────────
     taskService.updateTaskStatus(db, taskId, 'processing', 75, '正在校验分镜角色关联...');
     let totalCharAdded = 0;
     for (const sb of saved) {
       if (!sb?.id) continue;
-      const { added } = syncStoryboardCharacters(db, log, sb.id);
+      const { added } = syncEpisodeStoryboardCharacters(db, sb.id, deriveOpts.resources.characters);
       totalCharAdded += added.length;
+      // 返回值与数据库保持一致，包含此次受限补全的角色。
+      sb.characters = JSON.parse(db.prepare('SELECT characters FROM storyboards WHERE id = ?').get(sb.id).characters || '[]');
     }
     if (totalCharAdded > 0) {
       log.info('[分镜] 角色补全完成', { episode_id: episodeId, total_added: totalCharAdded });
@@ -1096,6 +1224,13 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
     log.info('Storyboard generation completed', { task_id: taskId, episode_id: episodeId });
   } catch (err) {
     log.error('Storyboard generation failed', { error: err.message, task_id: taskId });
+    if (!taskIsActive()) return;
+    try {
+      assertCurrent();
+    } catch (staleError) {
+      taskService.updateTaskError(db, taskId, staleError.message);
+      return;
+    }
 
     // 若连接中断（ECONNRESET 等）但已通过增量流式保存了部分分镜，视为部分成功而非彻底失败
     if (streamSavedNums.size > 0) {
@@ -1126,7 +1261,9 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
 function generateStoryboard(db, log, episodeId, model, style, storyboardCount, videoDuration, aspectRatio, includeNarration, universalOmni) {
   const cfg = loadConfig();
   const episode = db.prepare(
-    'SELECT id, script_content, description, drama_id FROM episodes WHERE id = ? AND deleted_at IS NULL'
+    `SELECT e.id, e.script_content, e.drama_id FROM episodes e
+     INNER JOIN dramas d ON d.id = e.drama_id AND d.deleted_at IS NULL
+     WHERE e.id = ? AND e.deleted_at IS NULL`
   ).get(Number(episodeId));
   if (!episode) {
     throw new Error('剧集不存在或无权限访问');
@@ -1166,34 +1303,23 @@ function generateStoryboard(db, log, episodeId, model, style, storyboardCount, v
     effectiveShotDuration = null;
   }
 
-  let scriptContent = (episode.script_content && String(episode.script_content).trim())
-    ? String(episode.script_content)
-    : (episode.description && String(episode.description).trim())
-      ? String(episode.description)
-      : '';
+  const scriptContent = typeof episode.script_content === 'string' ? episode.script_content.trim() : '';
   if (!scriptContent) {
     throw new Error('剧本内容为空，请先生成剧集内容');
   }
 
-  const characters = db.prepare(
-    'SELECT id, name FROM characters WHERE drama_id = ? AND deleted_at IS NULL ORDER BY name ASC'
-  ).all(episode.drama_id);
+  const resources = loadEpisodeResources(db, episode);
+  const { characters, scenes, props } = resources;
   let characterList = '无角色';
   if (characters.length > 0) {
     characterList = '[' + characters.map((c) => `{"id": ${c.id}, "name": "${(c.name || '').replace(/"/g, '\\"')}"}`).join(', ') + ']';
   }
 
-  const scenes = db.prepare(
-    'SELECT id, location, time FROM scenes WHERE drama_id = ? AND deleted_at IS NULL ORDER BY location ASC, time ASC'
-  ).all(episode.drama_id);
   let sceneList = '无场景';
   if (scenes.length > 0) {
     sceneList = '[' + scenes.map((s) => `{"id": ${s.id}, "location": "${(s.location || '').replace(/"/g, '\\"')}", "time": "${(s.time || '').replace(/"/g, '\\"')}"}`).join(', ') + ']';
   }
 
-  const props = db.prepare(
-    'SELECT id, name, type FROM props WHERE drama_id = ? AND deleted_at IS NULL ORDER BY id ASC'
-  ).all(episode.drama_id);
   let propList = '无道具';
   if (props.length > 0) {
     propList = '[' + props.map((p) => `{"id": ${p.id}, "name": "${(p.name || '').replace(/"/g, '\\"')}"${p.type ? `, "type": "${p.type.replace(/"/g, '\\"')}"` : ''}}`).join(', ') + ']';
@@ -1337,7 +1463,8 @@ The user enabled narrator voice-over for the whole episode. Every shot object MU
       systemPrompt,
       wantNarration,
       wantUniversalOmni,
-      clipSec
+      clipSec,
+      { episode, resources }
     );
   });
 

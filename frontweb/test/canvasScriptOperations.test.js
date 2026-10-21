@@ -12,7 +12,7 @@ const source = readFileSync(new URL('../src/composables/useCanvasScript.js', imp
 const instantiate = new Function('ref', 'watch', 'onScopeDispose', 'ElMessage', 'dramaAPI',
   'generationAPI', 'propAPI', 'taskAPI', 'useFilmStore', 'getDramaGenerationOptions',
   'createCanvasOperationGuard', 'CANVAS_NODE_STATUS_LABELS', `${source}\nreturn useCanvasScript`)
-const ep = (id, script = '剧本', revision = 1) => ({ id, title: `第${id}集`, description: '本集梗概', script_content: script, revision, characters: [], scenes: [], props: [] })
+const ep = (id, script = '剧本', revision = 1) => ({ id, title: `第${id}集`, source_text: `仅小说原文${id}`, description: '本集改编要求', script_content: script, revision, characters: [], scenes: [], props: [] })
 function deferred() { let resolve; const promise = new Promise((r) => { resolve = r }); return { promise, resolve } }
 function harness(t, overrides = {}) {
   setActivePinia(createPinia())
@@ -45,15 +45,20 @@ test('canvas saves only its episode with expected revision and acknowledges afte
   const request = deferred()
   let submission
   const h = harness(t, { updateEpisode: (...args) => { submission = args; return request.promise } })
-  h.film.updateEpisodeDraft(1, 11, { title: '独立标题', description: '独立梗概', scriptContent: '提交稿' })
+  h.film.updateEpisodeDraft(1, 11, { title: '独立标题', sourceText: '独立原文', description: '独立要求', scriptContent: '提交稿' })
   const saving = h.actions.saveScript(11)
-  assert.deepEqual(submission, [1, 11, { title: '独立标题', description: '独立梗概', script_content: '提交稿', expected_revision: 1 }])
-  h.film.updateEpisodeDraft(1, 11, { scriptContent: '保存期间继续输入' })
+  assert.deepEqual(submission, [1, 11, { title: '独立标题', source_text: '独立原文', description: '独立要求', script_content: '提交稿', expected_revision: 1 }])
+  h.film.updateEpisodeDraft(1, 11, { title: '保存期间改标题', sourceText: '保存期间改原文', description: '保存期间改要求', scriptContent: '保存期间继续输入' })
   h.filterEpisodeId.value = 22
   assert.equal(h.nodeStatuses.size, 0)
-  request.resolve({ ...ep(11, '提交稿', 2), title: '独立标题', description: '独立梗概' })
+  request.resolve({ ...ep(11, '提交稿', 2), title: '独立标题', source_text: '独立原文', description: '独立要求' })
   await saving
+  assert.equal(h.film.getEpisodeDraft(1, 11).title, '保存期间改标题')
+  assert.equal(h.film.getEpisodeDraft(1, 11).sourceText, '保存期间改原文')
+  assert.equal(h.film.getEpisodeDraft(1, 11).description, '保存期间改要求')
   assert.equal(h.film.getEpisodeDraft(1, 11).scriptContent, '保存期间继续输入')
+  assert.equal(h.film.getEpisodeDraft(1, 22).sourceText, '仅小说原文22')
+  assert.equal(h.film.getEpisodeDraft(1, 22).dirty, false)
   assert.equal(h.film.getEpisodeDraft(1, 11).baseRevision, 2)
   assert.equal(h.film.getEpisodeDraft(1, 11).dirty, true)
   assert.equal(h.refreshes, 0)
@@ -72,6 +77,42 @@ test('canvas save still acknowledges its draft after unmount without page callba
   assert.equal(h.refreshes, 0)
   assert.equal(h.messages.length, 0)
   assert.equal(h.nodeStatuses.size, 0)
+})
+
+test('canvas can clear source and optional instructions independently without replacing the script', async (t) => {
+  const h = harness(t)
+  await h.actions.saveScript(11, { sourceText: '', description: '' })
+  assert.deepEqual(h.calls, [['save', 1, 11, {
+    title: '第11集', source_text: '', description: '', script_content: '剧本', expected_revision: 1,
+  }]])
+  assert.equal(h.film.getEpisodeDraft(1, 11).sourceText, '')
+  assert.equal(h.film.getEpisodeDraft(1, 11).description, '')
+  assert.equal(h.film.getEpisodeDraft(1, 11).scriptContent, '剧本')
+  assert.equal(h.film.getEpisodeDraft(1, 11).dirty, false)
+  assert.equal(h.film.getEpisodeDraft(1, 22).sourceText, '仅小说原文22')
+})
+
+test('extraction requires actual script output even when novel source and instructions are present', async (t) => {
+  const h = harness(t)
+  h.film.updateEpisodeDraft(1, 11, { sourceText: '小说原文不是剧本', description: '改编要求不是剧本', scriptContent: '  ' })
+  for (const action of ['extractCharacters', 'extractScenes', 'extractProps', 'extractAll']) {
+    await assert.rejects(h.actions[action](11), /请先填写剧本内容/)
+  }
+  assert.equal(h.calls.length, 0)
+})
+
+test('source edits arriving during extraction save are preserved and pause downstream work', async (t) => {
+  const request = deferred()
+  const h = harness(t, { updateEpisode: () => request.promise })
+  h.film.updateEpisodeDraft(1, 11, { sourceText: '提交原文' })
+  const extracting = h.actions.extractAll(11)
+  h.film.updateEpisodeDraft(1, 11, { sourceText: '继续编辑原文' })
+  request.resolve({ ...ep(11, '剧本', 2), source_text: '提交原文' })
+  await assert.rejects(extracting, /保存期间剧本有新修改/)
+  assert.equal(h.film.getEpisodeDraft(1, 11).sourceText, '继续编辑原文')
+  assert.equal(h.film.getEpisodeDraft(1, 11).scriptContent, '剧本')
+  assert.equal(h.film.getEpisodeDraft(1, 11).dirty, true)
+  assert.equal(h.calls.length, 0)
 })
 
 test('extractAll uses selected episode associations despite existing project assets', async (t) => {

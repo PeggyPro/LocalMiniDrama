@@ -106,6 +106,7 @@ function ensureAllColumns(database) {
     { name: 'tags',           type: 'TEXT' },
     { name: 'thumbnail',      type: 'TEXT' },
     { name: 'total_episodes', type: 'INTEGER DEFAULT 1' },
+    { name: 'episodes_revision', type: 'INTEGER NOT NULL DEFAULT 0' },
     { name: 'total_duration', type: 'INTEGER DEFAULT 0' },
     { name: 'status',         type: 'TEXT DEFAULT \'draft\'' },
     { name: 'metadata',       type: 'TEXT' },
@@ -120,6 +121,8 @@ function ensureAllColumns(database) {
     { name: 'episode_number', type: 'INTEGER DEFAULT 0' },
     { name: 'title',          type: 'TEXT DEFAULT \'\'' },
     { name: 'script_content', type: 'TEXT' },
+    { name: 'source_text',    type: 'TEXT' },
+    { name: 'revision',       type: 'INTEGER NOT NULL DEFAULT 1' },
     { name: 'description',    type: 'TEXT' },
     { name: 'duration',       type: 'INTEGER DEFAULT 0' },
     { name: 'video_url',      type: 'TEXT' },
@@ -521,10 +524,25 @@ function ensureAllColumns(database) {
   } catch (_) {}
 }
 
+/** Preserve legacy duplicate rows and their associations; never silently delete history. */
+function ensureEpisodeNumberIndex(database) {
+  return database.transaction(() => {
+    const duplicates = database.prepare(`SELECT drama_id, episode_number, COUNT(*) AS count
+      FROM episodes WHERE deleted_at IS NULL GROUP BY drama_id, episode_number HAVING COUNT(*) > 1`).all();
+    if (duplicates.length) {
+      console.warn('Episode number uniqueness deferred: duplicate active episodes require manual resolution', duplicates);
+      return { created: false, duplicates };
+    }
+    database.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_episodes_active_number ON episodes (drama_id, episode_number) WHERE deleted_at IS NULL');
+    return { created: true, duplicates: [] };
+  })();
+}
+
 /** 对已打开的 database 执行迁移与兜底补列（供 app 启动时调用） */
 function runMigrationsAndEnsure(database) {
   runMigrations(database);
   ensureAllColumns(database);
+  ensureEpisodeNumberIndex(database);
 }
 
 function main() {
@@ -538,4 +556,4 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { runMigrationsAndEnsure, ensureColumns };
+module.exports = { runMigrationsAndEnsure, ensureColumns, ensureEpisodeNumberIndex };

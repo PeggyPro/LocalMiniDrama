@@ -26,10 +26,12 @@ function getTaskStatus(db, log) {
 
 function getResourceTasks(db, log) {
   return (req, res) => {
-    const resourceId = req.query.resource_id;
-    if (!resourceId) return response.badRequest(res, '缺少resource_id参数');
+    const resourceId = req.params?.resourceId ?? req.query.resource_id;
+    if (typeof resourceId !== 'string' || !resourceId.trim()) return response.badRequest(res, '缺少有效resource_id参数');
+    const type = req.query.type;
+    if (type !== undefined && (typeof type !== 'string' || !type.trim())) return response.badRequest(res, 'type 必须为非空字符串');
     try {
-      const tasks = taskService.getTasksByResource(db, resourceId);
+      const tasks = taskService.getTasksByResource(db, resourceId, { type });
       response.success(res, tasks);
     } catch (err) {
       log.errorw('Get resource tasks failed', { error: err.message });

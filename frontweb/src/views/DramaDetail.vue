@@ -74,8 +74,15 @@
         <div class="section-header">
           <div class="section-title">分集列表</div>
           <span class="section-count">共 {{ episodes.length }} 集</span>
-          <EpisodeBatchImportDialog ref="episodeBatchImportDialogRef" :start-episode-number="nextEpisodeNumber" style="margin-left: auto" @import="onBatchImportEpisodes" />
-          <el-button size="small" type="primary" :loading="addingEpisode" @click="onAddEpisode">
+          <el-button size="small" :disabled="episodeActionsDisabled" style="margin-left: auto" @click="showProjectStoryGeneration = true">整剧批量生成</el-button>
+          <EpisodeBatchImportDialog
+            :key="dramaId"
+            ref="episodeBatchImportDialogRef"
+            :start-episode-number="nextEpisodeNumber"
+            :submit-import="onBatchImportEpisodes"
+            :disabled="episodeActionsDisabled"
+          />
+          <el-button size="small" type="primary" :loading="addingEpisode" :disabled="episodeActionsDisabled" @click="onAddEpisode">
             <el-icon><Plus /></el-icon>新增一集
           </el-button>
         </div>
@@ -85,7 +92,7 @@
             v-for="ep in episodes"
             :key="ep.id"
             class="episode-card"
-            title="点击进入制作页"
+            :title="isEmptyEpisode(ep) ? '点击开始本集创作' : '点击进入制作页'"
             @click="goEpisode(ep.id)"
           >
             <div class="episode-card-header">
@@ -97,11 +104,12 @@
                 circle
                 :icon="Delete"
                 :loading="deletingEpisodeId === ep.id"
+                :disabled="episodeActionsDisabled"
                 @click.stop="onDeleteEpisode(ep)"
               />
             </div>
             <div class="episode-title">{{ ep.title || '未命名' }}</div>
-            <div class="episode-preview">{{ (ep.script_content || '').slice(0, 20) || '暂无剧本' }}</div>
+            <div class="episode-preview">{{ (ep.script_content || '').slice(0, 20) || ((ep.source_text || '').trim() ? '已导入原文，待生成剧本' : '暂无剧本') }}</div>
             <div class="episode-stats">
               <span class="ep-stat">
                 <span class="ep-stat-num">{{ ep.storyboards?.length ?? 0 }}</span> 分镜
@@ -110,7 +118,7 @@
             </div>
             <div class="episode-enter">
               <el-icon class="episode-enter-icon"><VideoPlay /></el-icon>
-              进入制作
+              {{ isEmptyEpisode(ep) ? '开始创作' : '进入制作' }}
             </div>
           </div>
         </div>
@@ -297,6 +305,13 @@
         </template>
       </section>
     </main>
+
+    <ProjectStoryGenerationDialog
+      :key="dramaId"
+      v-model="showProjectStoryGeneration"
+      :drama-id="dramaId"
+      @saved="onProjectStorySaved"
+    />
 
     <!-- 制作角色 编辑 -->
     <el-dialog v-model="editDramaCharVisible" title="编辑制作角色" width="500px" @close="editDramaCharForm = null">
@@ -524,11 +539,13 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onBeforeUnmount, watch, computed } from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount, watch, computed, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowLeft, VideoPlay, Plus, Delete, Sunny, Moon, PictureFilled, Grid } from '@element-plus/icons-vue'
 import EpisodeBatchImportDialog from '@/components/EpisodeBatchImportDialog.vue'
+import ProjectStoryGenerationDialog from '@/components/ProjectStoryGenerationDialog.vue'
+import { mergeImportedEpisodeRows } from '@/utils/episodeBatchImport'
 import StylePickerButton from '@/components/StylePickerButton.vue'
 import { useTheme } from '@/composables/useTheme'
 import { useAgentContext } from '@/stores/agentContext'
@@ -552,7 +569,26 @@ import {
 const route = useRoute()
 const { isDark, toggle: toggleTheme } = useTheme()
 const router = useRouter()
-const dramaId = Number(route.params.id)
+let dramaId = Number(route.params.id)
+let viewVersion = 0
+let dramaLoadVersion = 0
+let disposed = false
+const showProjectStoryGeneration = ref(false)
+
+function captureDramaTarget() {
+  return { dramaId, version: viewVersion }
+}
+
+function isCurrentDramaTarget(target) {
+  return !disposed && target.version === viewVersion && route.name === 'drama-detail'
+    && Number(route.params.id) === target.dramaId
+}
+
+function onProjectStorySaved(event) {
+  const target = captureDramaTarget()
+  if (Number(event?.dramaId) !== target.dramaId || !isCurrentDramaTarget(target)) return
+  loadDrama(target)
+}
 
 // 图片编辑 – 文件输入 refs（各资源类型独立）
 const charFileRef  = ref(null)
@@ -867,11 +903,16 @@ function formatDate(val) {
   return new Date(val).toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' })
 }
 
-async function loadDrama() {
+async function loadDrama(target = captureDramaTarget()) {
+  if (!isCurrentDramaTarget(target)) return false
+  const loadVersion = ++dramaLoadVersion
+  const isCurrentLoad = () => isCurrentDramaTarget(target) && loadVersion === dramaLoadVersion
   loading.value = true
   try {
-    let d = await dramaAPI.get(dramaId)
-    d = await backfillDramaStylePromptMetadataIfNeeded(dramaAPI, dramaId, d)
+    let d = await dramaAPI.get(target.dramaId)
+    if (!isCurrentLoad()) return false
+    d = await backfillDramaStylePromptMetadataIfNeeded(dramaAPI, target.dramaId, d)
+    if (!isCurrentLoad()) return false
     drama.value = d
     episodes.value = d.episodes || []
     useAgentContext().setEpisodes(episodes.value)
@@ -885,10 +926,12 @@ async function loadDrama() {
       infoForm.customStylePrompt = ''
     }
     infoForm.aspect_ratio = d.metadata?.aspect_ratio || '16:9'
+    return true
   } catch (e) {
-    ElMessage.error(e.message || '加载失败')
+    if (isCurrentLoad()) ElMessage.error(e.message || '加载失败')
+    return false
   } finally {
-    loading.value = false
+    if (isCurrentLoad()) loading.value = false
   }
 }
 
@@ -899,17 +942,21 @@ function saveInfo() {
     return
   }
   if (infoSaveTimer) clearTimeout(infoSaveTimer)
+  const target = captureDramaTarget()
+  const info = { title: infoForm.title, description: infoForm.description }
+  const outline = {
+    genre: infoForm.genre || undefined,
+    style: infoForm.style || undefined,
+    metadata: {
+      ...stylePromptMetadataForSave(infoForm.style, infoForm.customStylePrompt),
+      aspect_ratio: infoForm.aspect_ratio || '16:9',
+    },
+  }
   infoSaveTimer = setTimeout(async () => {
+    if (!isCurrentDramaTarget(target)) return
     try {
-      await dramaAPI.update(dramaId, { title: infoForm.title, description: infoForm.description })
-      await dramaAPI.saveOutline(dramaId, {
-        genre: infoForm.genre || undefined,
-        style: infoForm.style || undefined,
-        metadata: {
-          ...stylePromptMetadataForSave(infoForm.style, infoForm.customStylePrompt),
-          aspect_ratio: infoForm.aspect_ratio || '16:9',
-        },
-      })
+      await dramaAPI.update(target.dramaId, info)
+      await dramaAPI.saveOutline(target.dramaId, outline)
     } catch (e) {
       console.error('saveInfo failed', e)
     }
@@ -933,71 +980,98 @@ function epStatusLabel(status) {
   return map[status] || status
 }
 
-async function onBatchImportEpisodes(importedEpisodes) {
-  const current = episodes.value.map((ep, i) => ({
-    episode_number: ep.episode_number ?? i + 1,
-    title: ep.title || '第' + (ep.episode_number ?? i + 1) + '集',
-    script_content: ep.script_content || '',
-    description: ep.description ?? null,
-    duration: ep.duration ?? 0,
-  }))
-  await dramaAPI.saveEpisodes(dramaId, [...current, ...importedEpisodes])
-  await loadDrama()
+function isEmptyEpisode(ep) {
+  return !(ep.script_content || '').trim() && !ep.storyboards?.length
 }
 
 const addingEpisode = ref(false)
 const deletingEpisodeId = ref(null)
+const importingEpisodes = ref(false)
+const episodeActionPending = computed(() => addingEpisode.value || deletingEpisodeId.value !== null || importingEpisodes.value)
+const episodeActionsDisabled = computed(() => loading.value || !drama.value || episodeActionPending.value)
+
+function episodeCollectionRevision() {
+  const revision = drama.value?.episodes_revision
+  if (!Number.isInteger(revision) || revision < 0) throw new Error('缺少分集版本，请刷新项目后重试')
+  return revision
+}
+
+function applyEpisodeList(list, collectionRevision) {
+  episodes.value = list
+  drama.value.episodes = list
+  drama.value.episodes_revision = collectionRevision
+  useAgentContext().setEpisodes(list)
+}
+
+async function onBatchImportEpisodes(importedEpisodes) {
+  const target = captureDramaTarget()
+  if (!isCurrentDramaTarget(target) || episodeActionsDisabled.value) throw new Error('项目尚未就绪，请稍后重试')
+  const expectedCollectionRevision = episodeCollectionRevision()
+  importingEpisodes.value = true
+  try {
+    // Confirmation already chose source_text or script_content. Forward the full
+    // rows as-is so raw text and any explicit adaptation instructions survive.
+    const result = await dramaAPI.saveEpisodes(target.dramaId, importedEpisodes, {
+      mode: 'append',
+      expected_collection_revision: expectedCollectionRevision,
+    })
+    if (!isCurrentDramaTarget(target)) return result
+    applyEpisodeList(mergeImportedEpisodeRows(episodes.value, result.episodes), result.episodes_revision)
+    // A refresh failure must not turn a committed import into a retryable failed save.
+    await loadDrama(target)
+    return result
+  } finally {
+    if (isCurrentDramaTarget(target)) importingEpisodes.value = false
+  }
+}
 
 async function onDeleteEpisode(ep) {
+  if (episodeActionsDisabled.value) return
+  const target = captureDramaTarget()
+  if (!isCurrentDramaTarget(target)) return
+  const episodeId = ep.id
+  const expectedRevision = ep.revision
   const label = `第 ${ep.episode_number ?? '?'} 集「${ep.title || '未命名'}」`
+  deletingEpisodeId.value = episodeId
   try {
-    await ElMessageBox.confirm(`确定删除 ${label}？此操作不可恢复。`, '删除确认', {
-      type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消'
-    })
-  } catch { return }
-  deletingEpisodeId.value = ep.id
-  try {
-    const remaining = episodes.value
-      .filter((e) => e.id !== ep.id)
-      .map((e, i) => ({
-        episode_number: e.episode_number ?? i + 1,
-        title: e.title || '第' + (e.episode_number ?? i + 1) + '集',
-        script_content: e.script_content || '',
-        description: e.description ?? null,
-        duration: e.duration ?? 0,
-      }))
-    await dramaAPI.saveEpisodes(dramaId, remaining)
+    if (!Number.isInteger(expectedRevision) || expectedRevision < 0) throw new Error('缺少分集版本，请刷新项目后重试')
+    try {
+      await ElMessageBox.confirm(`确定删除 ${label}？此操作不可恢复。`, '删除确认', {
+        type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消'
+      })
+    } catch { return }
+    if (!isCurrentDramaTarget(target)) return
+    const result = await dramaAPI.deleteEpisode(target.dramaId, episodeId, { expected_revision: expectedRevision })
+    if (!isCurrentDramaTarget(target)) return
+    applyEpisodeList(episodes.value.filter((episode) => episode.id !== episodeId), result.episodes_revision)
     ElMessage.success(`${label} 已删除`)
-    await loadDrama()
+    await loadDrama(target)
   } catch (e) {
-    ElMessage.error(e.message || '删除失败')
+    if (isCurrentDramaTarget(target)) ElMessage.error(e.message || '删除失败')
   } finally {
-    deletingEpisodeId.value = null
+    if (isCurrentDramaTarget(target)) deletingEpisodeId.value = null
   }
 }
 
 async function onAddEpisode() {
+  if (episodeActionsDisabled.value) return
+  const target = captureDramaTarget()
+  if (!isCurrentDramaTarget(target)) return
   addingEpisode.value = true
   try {
-    const list = episodes.value
-    const nextNum = list.length > 0
-      ? Math.max(...list.map((e) => Number(e.episode_number) || 0), 0) + 1
-      : 1
-    const updated = list.map((ep, i) => ({
-      episode_number: ep.episode_number ?? i + 1,
-      title: ep.title || '第' + (ep.episode_number ?? i + 1) + '集',
-      script_content: ep.script_content || '',
-      description: ep.description ?? null,
-      duration: ep.duration ?? 0
-    }))
-    updated.push({ episode_number: nextNum, title: '第' + nextNum + '集', script_content: '', description: null, duration: 0 })
-    await dramaAPI.saveEpisodes(dramaId, updated)
-    ElMessage.success('已添加第' + nextNum + '集')
-    await loadDrama()
+    const expectedCollectionRevision = episodeCollectionRevision()
+    const episode = await dramaAPI.createEpisode(target.dramaId, {
+      script_content: '', description: null, duration: 0,
+      expected_collection_revision: expectedCollectionRevision,
+    })
+    if (!isCurrentDramaTarget(target)) return
+    applyEpisodeList([...episodes.value, episode], episode.episodes_revision)
+    ElMessage.success(`已添加第 ${episode.episode_number} 集，可点击「开始创作」`)
+    await loadDrama(target)
   } catch (e) {
-    ElMessage.error(e.message || '添加失败')
+    if (isCurrentDramaTarget(target)) ElMessage.error(e.message || '添加失败')
   } finally {
-    addingEpisode.value = false
+    if (isCurrentDramaTarget(target)) addingEpisode.value = false
   }
 }
 
@@ -1010,11 +1084,15 @@ function openPreview(url) { if (url) previewUrl.value = url }
 const charList = ref([]), charLoading = ref(false), charPage = ref(1), charPageSize = ref(20), charTotal = ref(0), charKw = ref('')
 let charKwTimer = null
 async function loadCharList() {
+  const target = captureDramaTarget()
+  if (!isCurrentDramaTarget(target)) return
   charLoading.value = true
   try {
-    const res = await characterLibraryAPI.list({ drama_id: dramaId, page: charPage.value, page_size: charPageSize.value, keyword: charKw.value || undefined })
+    const res = await characterLibraryAPI.list({ drama_id: target.dramaId, page: charPage.value, page_size: charPageSize.value, keyword: charKw.value || undefined })
+    if (!isCurrentDramaTarget(target)) return
     charList.value = res?.items ?? []; charTotal.value = res?.pagination?.total ?? 0
-  } catch { charList.value = [] } finally { charLoading.value = false }
+  } catch { if (isCurrentDramaTarget(target)) charList.value = [] }
+  finally { if (isCurrentDramaTarget(target)) charLoading.value = false }
 }
 function onCharKwInput() { if (charKwTimer) clearTimeout(charKwTimer); charKwTimer = setTimeout(() => { charPage.value = 1; loadCharList() }, 300) }
 const editCharVisible = ref(false), editCharForm = ref(null), editCharSaving = ref(false)
@@ -1038,11 +1116,15 @@ async function deleteChar(item) {
 const sceneList = ref([]), sceneLoading = ref(false), scenePage = ref(1), scenePageSize = ref(20), sceneTotal = ref(0), sceneKw = ref('')
 let sceneKwTimer = null
 async function loadSceneList() {
+  const target = captureDramaTarget()
+  if (!isCurrentDramaTarget(target)) return
   sceneLoading.value = true
   try {
-    const res = await sceneLibraryAPI.list({ drama_id: dramaId, page: scenePage.value, page_size: scenePageSize.value, keyword: sceneKw.value || undefined })
+    const res = await sceneLibraryAPI.list({ drama_id: target.dramaId, page: scenePage.value, page_size: scenePageSize.value, keyword: sceneKw.value || undefined })
+    if (!isCurrentDramaTarget(target)) return
     sceneList.value = res?.items ?? []; sceneTotal.value = res?.pagination?.total ?? 0
-  } catch { sceneList.value = [] } finally { sceneLoading.value = false }
+  } catch { if (isCurrentDramaTarget(target)) sceneList.value = [] }
+  finally { if (isCurrentDramaTarget(target)) sceneLoading.value = false }
 }
 function onSceneKwInput() { if (sceneKwTimer) clearTimeout(sceneKwTimer); sceneKwTimer = setTimeout(() => { scenePage.value = 1; loadSceneList() }, 300) }
 const editSceneVisible = ref(false), editSceneForm = ref(null), editSceneSaving = ref(false)
@@ -1067,11 +1149,15 @@ async function deleteScene(item) {
 const propList = ref([]), propLoading = ref(false), propPage = ref(1), propPageSize = ref(20), propTotal = ref(0), propKw = ref('')
 let propKwTimer = null
 async function loadPropList() {
+  const target = captureDramaTarget()
+  if (!isCurrentDramaTarget(target)) return
   propLoading.value = true
   try {
-    const res = await propLibraryAPI.list({ drama_id: dramaId, page: propPage.value, page_size: propPageSize.value, keyword: propKw.value || undefined })
+    const res = await propLibraryAPI.list({ drama_id: target.dramaId, page: propPage.value, page_size: propPageSize.value, keyword: propKw.value || undefined })
+    if (!isCurrentDramaTarget(target)) return
     propList.value = res?.items ?? []; propTotal.value = res?.pagination?.total ?? 0
-  } catch { propList.value = [] } finally { propLoading.value = false }
+  } catch { if (isCurrentDramaTarget(target)) propList.value = [] }
+  finally { if (isCurrentDramaTarget(target)) propLoading.value = false }
 }
 function onPropKwInput() { if (propKwTimer) clearTimeout(propKwTimer); propKwTimer = setTimeout(() => { propPage.value = 1; loadPropList() }, 300) }
 const editPropVisible = ref(false), editPropForm = ref(null), editPropSaving = ref(false)
@@ -1191,18 +1277,55 @@ function onAgentChanged(event) {
   loadSceneList()
 }
 
+function clearViewTimers() {
+  for (const timer of [infoSaveTimer, charKwTimer, sceneKwTimer, propKwTimer, importKwTimer]) {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+async function loadProjectDetail() {
+  const target = captureDramaTarget()
+  if (activeResTab.value === 'lib-char') loadCharList()
+  else if (activeResTab.value === 'lib-scene') loadSceneList()
+  else if (activeResTab.value === 'lib-prop') loadPropList()
+  const loaded = await loadDrama(target)
+  if (loaded && isCurrentDramaTarget(target) && route.query.importBatch) {
+    await nextTick()
+    if (isCurrentDramaTarget(target)) episodeBatchImportDialogRef.value?.openDialog?.()
+  }
+}
+
+watch(() => route.path, () => {
+  viewVersion += 1
+  clearViewTimers()
+  if (route.name !== 'drama-detail') return
+  dramaId = Number(route.params.id)
+  showProjectStoryGeneration.value = false
+  drama.value = null
+  episodes.value = []
+  useAgentContext().setEpisodes([])
+  addingEpisode.value = false
+  deletingEpisodeId.value = null
+  importingEpisodes.value = false
+  charList.value = []; charTotal.value = 0; charLoading.value = false
+  sceneList.value = []; sceneTotal.value = 0; sceneLoading.value = false
+  propList.value = []; propTotal.value = 0; propLoading.value = false
+  importVisible.value = false
+  editDramaCharVisible.value = false; editDramaSceneVisible.value = false; editDramaPropVisible.value = false
+  editCharVisible.value = false; editSceneVisible.value = false; editPropVisible.value = false
+  Object.assign(infoForm, { title: '', description: '', genre: '', style: '', customStylePrompt: '', aspect_ratio: '16:9' })
+  loadProjectDetail()
+}, { flush: 'sync' })
+
 onMounted(() => {
   window.addEventListener('lmd-agent-changed', onAgentChanged)
-  loadDrama()
-  loadCharList()
-  if (route.query.importBatch) {
-    setTimeout(() => {
-      episodeBatchImportDialogRef.value?.openDialog?.()
-    }, 0)
-  }
+  loadProjectDetail()
 })
 
 onBeforeUnmount(() => {
+  disposed = true
+  viewVersion += 1
+  clearViewTimers()
   window.removeEventListener('lmd-agent-changed', onAgentChanged)
   useAgentContext().clear()
 })

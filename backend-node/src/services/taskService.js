@@ -18,10 +18,15 @@ function getTask(db, taskId) {
   return rowToTask(row);
 }
 
-function getTasksByResource(db, resourceId) {
+function getTasksByResource(db, resourceId, { type } = {}) {
+  if (type !== undefined && (typeof type !== 'string' || !type.trim())) {
+    const error = new Error('type 必须为非空字符串');
+    error.statusCode = 400;
+    throw error;
+  }
   const rows = db.prepare(
-    'SELECT * FROM async_tasks WHERE resource_id = ? AND deleted_at IS NULL ORDER BY created_at DESC'
-  ).all(resourceId);
+    `SELECT * FROM async_tasks WHERE resource_id = ? AND deleted_at IS NULL${type === undefined ? '' : ' AND type = ?'} ORDER BY created_at DESC`
+  ).all(...(type === undefined ? [String(resourceId)] : [String(resourceId), type]));
   return rows.map(rowToTask);
 }
 
@@ -29,22 +34,23 @@ function updateTaskStatus(db, taskId, status, progress, message) {
   const now = new Date().toISOString();
   let completedAt = null;
   if (status === 'completed' || status === 'failed') completedAt = now;
-  db.prepare(
+  const changed = db.prepare(
     `UPDATE async_tasks SET status = ?, progress = ?, message = ?, updated_at = ?, completed_at = ?
-     WHERE id = ?`
-  ).run(status, progress ?? 0, message || '', now, completedAt, taskId);
+     WHERE id = ? AND status IN ('pending', 'processing') AND deleted_at IS NULL`
+  ).run(status, progress ?? 0, message || '', now, completedAt, taskId).changes > 0;
+  return changed;
 }
 
 function updateTaskError(db, taskId, errMsg) {
   const now = new Date().toISOString();
   try {
-    db.prepare(
+    return db.prepare(
       `UPDATE async_tasks SET status = 'failed', error = ?, progress = 0, completed_at = ?, updated_at = ?
-       WHERE id = ?`
-    ).run(errMsg || '', now, now, taskId);
+       WHERE id = ? AND status IN ('pending', 'processing') AND deleted_at IS NULL`
+    ).run(errMsg || '', now, now, taskId).changes > 0;
   } catch (e) {
     if ((e.message || '').includes('error')) {
-      updateTaskStatus(db, taskId, 'failed', 0, errMsg || '任务失败');
+      return updateTaskStatus(db, taskId, 'failed', 0, errMsg || '任务失败');
     } else throw e;
   }
 }
@@ -52,10 +58,10 @@ function updateTaskError(db, taskId, errMsg) {
 function updateTaskResult(db, taskId, result) {
   const now = new Date().toISOString();
   const resultStr = typeof result === 'string' ? result : JSON.stringify(result || {});
-  db.prepare(
+  return db.prepare(
     `UPDATE async_tasks SET status = 'completed', progress = 100, result = ?, completed_at = ?, updated_at = ?
-     WHERE id = ?`
-  ).run(resultStr, now, now, taskId);
+     WHERE id = ? AND status IN ('pending', 'processing') AND deleted_at IS NULL`
+  ).run(resultStr, now, now, taskId).changes > 0;
 }
 
 function rowToTask(r) {
@@ -72,6 +78,13 @@ function rowToTask(r) {
     updated_at: r.updated_at,
     completed_at: r.completed_at,
   };
+}
+
+function isTaskActive(db, taskId, type, resourceId) {
+  const task = getTask(db, taskId);
+  return !!task && ['pending', 'processing'].includes(task.status)
+    && (type === undefined || task.type === type)
+    && (resourceId === undefined || String(task.resource_id) === String(resourceId));
 }
 
 const ORPHAN_ASYNC_TASK_MSG = '服务重启后任务中断，请重新操作';
@@ -123,6 +136,7 @@ module.exports = {
   updateTaskResult,
   failOrphanedAsyncTasksOnStartup,
   cancelTask,
+  isTaskActive,
   ORPHAN_ASYNC_TASK_MSG,
   USER_CANCEL_TASK_MSG,
 };

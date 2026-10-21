@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
+const fs = require('node:fs');
 const revisions = require('../src/services/episodeRevisionService');
 const dramaService = require('../src/services/dramaService');
 const dramaRoutes = require('../src/routes/drama');
@@ -87,6 +88,89 @@ test('append adds only; replace retains IDs and omitted fields; legacy mode-less
   assert.equal(drama(db).total_episodes, 1);
 });
 
+test('episode create/PATCH/read expose source_text and preserve all omitted fields with revision checks', (t) => {
+  const db = createEpisodeTestDb(t);
+  const routes = dramaRoutes(db, {}, log);
+  const create = makeResponse();
+  routes.createEpisode({ params: { id: '1' }, body: {
+    title: '用户集标题', source_text: '  小说原文\n第二段  ', description: '改编要求', script_content: '已有剧本', expected_collection_revision: 0,
+  } }, create);
+  assert.equal(create.statusCode, 201);
+  const created = create.payload.data;
+  assert.equal(created.source_text, '  小说原文\n第二段  ');
+  assert.equal(created.revision, 1);
+  assert.equal(created.episodes_revision, 1);
+  const patch = makeResponse();
+  routes.updateEpisode({ params: { id: '1', episodeId: String(created.id) }, body: {
+    source_text: '新原文', expected_revision: 1,
+  } }, patch);
+  const saved = patch.payload.data;
+  assert.equal(patch.statusCode, 200);
+  assert.equal(saved.source_text, '新原文');
+  assert.equal(saved.description, '改编要求');
+  assert.equal(saved.script_content, '已有剧本');
+  assert.equal(saved.title, '用户集标题');
+  assert.equal(saved.revision, 2);
+  assert.equal(saved.episodes_revision, 2);
+  const other = dramaService.updateEpisode(db, log, 1, created.id, { source_text: undefined, script_content: '新剧本', expected_revision: 2 });
+  assert.equal(other.source_text, '新原文');
+  assert.equal(other.description, '改编要求');
+  assert.equal(other.revision, 3);
+  assert.equal(dramaService.getDrama(db, 1).episodes.find((ep) => ep.id === created.id).source_text, '新原文');
+  assert.equal(dramaService.listDramas(db, {}).dramas.find((d) => d.id === 1).episodes.find((ep) => ep.id === created.id).source_text, '新原文');
+  const before = contentSnapshot(db);
+  assert.throws(() => revisions.updateEpisode(db, 1, created.id, { source_text: 'stale', expected_revision: 2 }), { statusCode: 409 });
+  assert.throws(() => revisions.updateEpisode(db, 1, created.id, { source_text: {}, expected_revision: 3 }), { statusCode: 400 });
+  assert.throws(() => revisions.createEpisode(db, 1, { source_text: 4 }), { statusCode: 400 });
+  assert.deepEqual(contentSnapshot(db), before);
+  const empty = revisions.updateEpisode(db, 1, created.id, { source_text: '', expected_revision: 3 });
+  assert.equal(empty.source_text, '');
+  assert.equal(empty.revision, 4);
+  const cleared = revisions.updateEpisode(db, 1, created.id, { source_text: null, expected_revision: 4 });
+  assert.equal(cleared.source_text, null);
+  assert.equal(cleared.description, '改编要求');
+  assert.equal(cleared.script_content, '新剧本');
+  assert.equal(cleared.revision, 5);
+});
+
+test('batch source writes preserve omitted source/instructions/scripts and legacy rows never infer source', (t) => {
+  const db = createEpisodeTestDb(t);
+  const first = episode(db, 10);
+  const appended = dramaService.saveEpisodes(db, log, 1, {
+    mode: 'append', expected_collection_revision: 0, episodes: [
+      { episode_number: 3, source_text: '第三集原文', description: '第三集要求', script_content: '第三集剧本' },
+      { episode_number: 4, description: '旧式梗概', script_content: '旧式剧本' },
+    ],
+  });
+  assert.deepEqual(episode(db, 10), first);
+  assert.equal(appended.episodes[2].source_text, '第三集原文');
+  assert.equal(appended.episodes[3].source_text, null);
+  const replaced = dramaService.saveEpisodes(db, log, 1, {
+    mode: 'replace', expected_collection_revision: 1, episodes: [
+      { episode_number: 1, source_text: '第一集原文' },
+      { episode_number: 2 },
+      { episode_number: 3, description: '' },
+      { episode_number: 4, script_content: '更新剧本' },
+    ],
+  });
+  assert.equal(replaced.episodes_revision, 2);
+  assert.equal(replaced.episodes[0].source_text, '第一集原文');
+  assert.equal(replaced.episodes[0].description, first.description);
+  assert.equal(replaced.episodes[0].script_content, first.script_content);
+  assert.equal(replaced.episodes[1].source_text, null);
+  assert.equal(replaced.episodes[2].source_text, '第三集原文');
+  assert.equal(replaced.episodes[2].description, '');
+  assert.equal(replaced.episodes[2].script_content, '第三集剧本');
+  assert.equal(replaced.episodes[3].source_text, null);
+  assert.ok(replaced.episodes.every((ep) => ep.revision === 2));
+  const legacy = dramaService.saveEpisodes(db, log, 1, { episodes: [
+    { episode_number: 1, title: '只改标题' }, { episode_number: 3, source_text: '' }, { episode_number: 4, source_text: null },
+  ] });
+  assert.equal(legacy.episodes[0].source_text, '第一集原文');
+  assert.equal(legacy.episodes[1].source_text, '');
+  assert.equal(legacy.episodes[2].source_text, null);
+});
+
 test('bulk validation rejects normalized duplicates, invalid numbers, stale/foreign IDs before changing data', (t) => {
   const db = createEpisodeTestDb(t);
   const cases = [
@@ -95,6 +179,8 @@ test('bulk validation rejects normalized duplicates, invalid numbers, stale/fore
     { episodes: [{ episode_number: 3 }, { id: 1, episode_number: 4 }] },
     { episodes: [{ id: 10, episode_number: 2 }] },
     { episodes: [{ episode_number: 3, title: {} }] },
+    { episodes: [{ episode_number: 3, source_text: false }] },
+    { episodes: [{ episode_number: 1, source_text: '不应部分写入' }, { episode_number: 3, source_text: {} }] },
     { mode: 'bad', episodes: [] },
     { mode: 'append', episodes: [] },
     { mode: 'replace', expected_collection_revision: 8, episodes: [] },
@@ -191,6 +277,22 @@ test('registered API routes preserve raw novel chapter limits and map input vali
   assert.deepEqual(contentSnapshot(db), before);
 });
 
+test('startup ensureColumns adds source_text without inferring legacy source if migration SQL was unavailable', (t) => {
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  t.mock.method(console, 'log', () => {});
+  const readFileSync = fs.readFileSync;
+  t.mock.method(fs, 'readFileSync', (file, ...args) => String(file).endsWith('25_episode_source_text.sql') ? '' : readFileSync(file, ...args));
+  db.exec(`CREATE TABLE dramas (id INTEGER PRIMARY KEY, title TEXT, deleted_at TEXT);
+    CREATE TABLE episodes (id INTEGER PRIMARY KEY, drama_id INTEGER, episode_number INTEGER, title TEXT, description TEXT, script_content TEXT, deleted_at TEXT);
+    INSERT INTO dramas (id, title) VALUES (1, '旧项目');
+    INSERT INTO episodes VALUES (1, 1, 1, '旧集', '旧说明', '旧剧本', NULL);`);
+  runMigrationsAndEnsure(db);
+  assert.deepEqual(db.prepare('SELECT title, source_text, description, script_content FROM episodes').get(), {
+    title: '旧集', source_text: null, description: '旧说明', script_content: '旧剧本',
+  });
+});
+
 test('revision migration initializes existing rows, is repeatable, and preserves duplicate history', (t) => {
   const db = new Database(':memory:');
   t.after(() => db.close());
@@ -198,17 +300,24 @@ test('revision migration initializes existing rows, is repeatable, and preserves
   t.mock.method(console, 'warn', () => {});
   // Legacy tables intentionally lack revision columns and contain active duplicates.
   db.exec(`CREATE TABLE dramas (id INTEGER PRIMARY KEY, title TEXT, deleted_at TEXT);
-    CREATE TABLE episodes (id INTEGER PRIMARY KEY, drama_id INTEGER, episode_number INTEGER, title TEXT, deleted_at TEXT);
+    CREATE TABLE episodes (id INTEGER PRIMARY KEY, drama_id INTEGER, episode_number INTEGER, title TEXT, description TEXT, script_content TEXT, deleted_at TEXT);
     INSERT INTO dramas (id, title) VALUES (1, '旧项目');
-    INSERT INTO episodes VALUES (1, 1, 1, '旧第一集', NULL), (2, 1, 1, '重复旧集', NULL), (3, 1, 1, '历史集', '2020-01-01');`);
+    INSERT INTO episodes VALUES (1, 1, 1, '旧第一集', '旧说明不应当作原文', '旧剧本不应移动', NULL),
+      (2, 1, 1, '重复旧集', '', '重复集正文', NULL), (3, 1, 1, '历史集', '历史说明', '历史剧本', '2020-01-01');`);
+  const legacy = db.prepare('SELECT * FROM episodes ORDER BY id').all();
   runMigrationsAndEnsure(db);
   assert.equal(db.prepare('SELECT episodes_revision FROM dramas WHERE id = 1').get().episodes_revision, 0);
   assert.deepEqual(db.prepare('SELECT revision FROM episodes ORDER BY id').all(), [{ revision: 1 }, { revision: 1 }, { revision: 1 }]);
+  assert.deepEqual(db.prepare('SELECT id, drama_id, episode_number, title, description, script_content, deleted_at FROM episodes ORDER BY id').all(), legacy);
+  assert.deepEqual(db.prepare('SELECT source_text FROM episodes ORDER BY id').all(), [{ source_text: null }, { source_text: null }, { source_text: null }]);
+  db.prepare('UPDATE episodes SET source_text = ? WHERE id = 1').run('迁移后保存的独立原文');
   const retained = db.prepare('SELECT id, title, deleted_at FROM episodes ORDER BY id').all();
   assert.equal(ensureEpisodeNumberIndex(db).created, false);
   assert.deepEqual(db.prepare('SELECT id, title, deleted_at FROM episodes ORDER BY id').all(), retained);
   runMigrationsAndEnsure(db);
   assert.deepEqual(db.prepare('SELECT id, title, deleted_at FROM episodes ORDER BY id').all(), retained);
+  assert.deepEqual(db.prepare('SELECT id, drama_id, episode_number, title, description, script_content, deleted_at FROM episodes ORDER BY id').all(), legacy);
+  assert.equal(episode(db, 1).source_text, '迁移后保存的独立原文');
   db.prepare('UPDATE episodes SET deleted_at = ? WHERE id = 2').run('resolved explicitly');
   assert.equal(ensureEpisodeNumberIndex(db).created, true);
   assert.throws(() => db.prepare('INSERT INTO episodes (drama_id, episode_number, title) VALUES (1, 1, ?)').run('duplicate'), /UNIQUE/);

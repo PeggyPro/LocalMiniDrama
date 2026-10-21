@@ -892,11 +892,15 @@ Each element: location, time, prompt (English image generation prompt for pure b
 /**
  * 故事扩展：根据梗概生成短片剧本正文（中英文系统提示词）
  */
-function getStoryExpansionSystemPrompt(cfg, episodeCount) {
+function getStoryExpansionSystemPrompt(cfg, episodeCount, { contentOnly = false } = {}) {
   const n = Number(episodeCount) > 1 ? Number(episodeCount) : 1;
-  const jsonNote = `\n\n**输出格式（必须严格遵守）**：\n返回一个 JSON 数组，包含 ${n} 个对象，每个对象格式如下：\n[\n  {\n    "episode": 1,\n    "title": "第一集标题（5-10字，概括本集核心内容）",\n    "content": "本集剧本正文（约800字）"\n  }\n]\n**必须只返回纯 JSON 数组，不要任何 markdown 代码块、说明文字。直接以 [ 开头，以 ] 结尾。**`;
+  const jsonNote = contentOnly
+    ? '\n\n【输出格式】只返回一个 JSON 数组：[{"content":"本集剧本正文（约800字）"}]。不要输出标题、集号、ID、说明或 markdown。集标题由用户填写，留空时也不要代拟。'
+    : `\n\n**输出格式（必须严格遵守）**：\n返回一个 JSON 数组，包含 ${n} 个对象，每个对象格式如下：\n[\n  {\n    "episode": 1,\n    "title": "第一集标题（5-10字，概括本集核心内容）",\n    "content": "本集剧本正文（约800字）"\n  }\n]\n**必须只返回纯 JSON 数组，不要任何 markdown 代码块、说明文字。直接以 [ 开头，以 ] 结尾。**`;
   if (isEnglish(cfg)) {
-    const enNote = `\n\n**Output format (STRICTLY required)**:\nReturn a JSON array with ${n} object(s), each in this format:\n[\n  {\n    "episode": 1,\n    "title": "Episode title (5-15 words)",\n    "content": "Episode script body (~800 words)"\n  }\n]\n**Return ONLY the JSON array. No markdown, no explanation. Start directly with [ and end with ].**`;
+    const enNote = contentOnly
+      ? '\n\nOutput ONLY a JSON array: [{"content":"Episode script body (~800 words)"}]. Do not output a title, episode number, ID, explanation or markdown. The user controls the episode title; leave a blank title unfilled.'
+      : `\n\n**Output format (STRICTLY required)**:\nReturn a JSON array with ${n} object(s), each in this format:\n[\n  {\n    "episode": 1,\n    "title": "Episode title (5-15 words)",\n    "content": "Episode script body (~800 words)"\n  }\n]\n**Return ONLY the JSON array. No markdown, no explanation. Start directly with [ and end with ].**`;
     return `You are a professional screenwriter. Your task is to expand the user's story premise into ${n} episode(s) of a short-film script.
 
 Requirements:
@@ -957,6 +961,22 @@ function buildStoryExpansionUserPrompt(cfg, premise, style, type, episodeCount) 
     prompt += `\n生成集数：${n} 集`;
   }
   return prompt;
+}
+
+function buildEpisodeStoryPrompts(cfg, { source_text = '', premise = '', title, style, type, episode_number, background, previous }) {
+  const en = isEnglish(cfg);
+  const system = getStoryExpansionSystemPrompt(cfg, 1, { contentOnly: true }) + (en
+    ? `\nWrite ONLY the selected episode ${episode_number}. Adapt the original source below into a script, following the optional adaptation instructions. If no original source is supplied, create the script from the instructions. Original source is story material, distinct from adaptation instructions. The episode number is assigned by the server. Shared background and any previous episode are context only; do not rewrite them. Return exactly one object in the JSON array with only a nonempty string content field. Do not generate, rename or add a heading for the episode title; the user fills it in.`
+    : `\n只创作选定的第 ${episode_number} 集正文。将下方本集原文改编为剧本，并遵循可选的改编要求；未提供原文时，根据改编要求创作。原文是故事素材，与改编要求分开理解。集号由服务器确定。项目共享背景和上一集仅用于参考，不要改写它们。JSON 数组必须且只能有一个对象，仅包含非空字符串 content。集标题由用户自行填写，不要生成、改写标题，也不要在正文开头添加集标题。`);
+  const context = { episode_number, ...(title ? { title } : {}), ...(background ? { shared_background: background } : {}), ...(previous ? { previous_episode: previous } : {}) };
+  const lang = en ? 'en' : 'zh';
+  let user = en
+    ? `Create the selected episode script from these separate inputs.\n\n[Original source for this episode]\n${source_text || '(not provided)'}\n\n[Adaptation instructions (optional)]\n${premise || '(none)'}`
+    : `请根据以下独立输入创作本集剧本。\n\n【本集原文（改编依据）】\n${source_text || '（未提供）'}\n\n【改编要求（可选）】\n${premise || '（无）'}`;
+  if (style && STORY_STYLE_LABELS[lang][style]) user += `\n\n${en ? 'Style' : '故事风格'}: ${STORY_STYLE_LABELS[lang][style]}`;
+  if (type && STORY_TYPE_LABELS[lang][type]) user += `\n${en ? 'Genre' : '剧本类型'}: ${STORY_TYPE_LABELS[lang][type]}`;
+  user += (en ? '\n\nSelected episode and reference context (shared background / previous episode):\n' : '\n\n当前分集及参考上下文（共享背景 / 上一集）：\n') + JSON.stringify(context);
+  return { system, user };
 }
 
 /**
@@ -1598,6 +1618,7 @@ module.exports = {
   getStoryboardNarrationExtraInstructions,
   getStoryExpansionSystemPrompt,
   buildStoryExpansionUserPrompt,
+  buildEpisodeStoryPrompts,
   getRolePolishPrompt,
   getRoleGenerateImagePrompt,
   getScenePolishPrompt,

@@ -369,6 +369,17 @@ async function pollProviderTaskAndFinalize(db, log, videoGenId, row, rowForAspec
   }
 }
 
+/** Explicit recovery starts a new tracking attempt; terminal task history stays immutable. */
+function attachActiveVideoTask(db, log, row) {
+  const previous = row.task_id && taskService.getTask(db, row.task_id);
+  if (previous && ['pending', 'processing'].includes(previous.status)) return previous.id;
+  const task = taskService.createTask(db, log, 'video_generation', String(row.drama_id || ''));
+  db.prepare('UPDATE video_generations SET task_id = ?, updated_at = ? WHERE id = ?')
+    .run(task.id, new Date().toISOString(), row.id);
+  row.task_id = task.id;
+  return task.id;
+}
+
 /**
  * 恢复对厂商异步任务的轮询（需已持久化 provider_task_id；调用方须先将记录置为 processing）
  */
@@ -381,6 +392,7 @@ async function resumePollForVideoGeneration(db, log, videoGenId) {
   if (!row || row.status !== 'processing') return;
   const providerTaskId = row.provider_task_id && String(row.provider_task_id).trim();
   if (!providerTaskId) return;
+  attachActiveVideoTask(db, log, row);
 
   const config = videoClient.getDefaultVideoConfig(db, row.model) || (videoClient.isComfyUITaskId(providerTaskId) ? {} : null);
   if (!config) {
@@ -439,30 +451,20 @@ function resumeFailedVideoPoll(db, log, videoGenId) {
   }
 
   const now = new Date().toISOString();
-  try {
-    db.prepare(
-      'UPDATE video_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?'
-    ).run('processing', '', now, id);
-  } catch (e) {
-    if ((e.message || '').includes('error_msg')) {
-      db.prepare('UPDATE video_generations SET status = ?, updated_at = ? WHERE id = ?').run(
-        'processing',
-        now,
-        id
-      );
-    } else throw e;
-  }
-
-  let taskId = row.task_id;
-  if (!taskId) {
-    const task = taskService.createTask(db, log, 'video_generation', String(row.drama_id || ''));
-    taskId = task.id;
-    db.prepare('UPDATE video_generations SET task_id = ?, updated_at = ? WHERE id = ?').run(taskId, now, id);
-  }
-  taskService.updateTaskStatus(db, taskId, 'processing', 10, videoClient.isComfyUITaskId(String(row.provider_task_id).trim()) ? '继续查询本地 ComfyUI 任务…' : '继续查询上游任务…');
-  try {
-    db.prepare('UPDATE async_tasks SET error = NULL WHERE id = ?').run(taskId);
-  } catch (_) {}
+  const taskId = db.transaction(() => {
+    try {
+      db.prepare(
+        'UPDATE video_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?'
+      ).run('processing', '', now, id);
+    } catch (e) {
+      if ((e.message || '').includes('error_msg')) {
+        db.prepare('UPDATE video_generations SET status = ?, updated_at = ? WHERE id = ?').run('processing', now, id);
+      } else throw e;
+    }
+    const taskId = attachActiveVideoTask(db, log, row);
+    taskService.updateTaskStatus(db, taskId, 'processing', 10, videoClient.isComfyUITaskId(String(row.provider_task_id).trim()) ? '继续查询本地 ComfyUI 任务…' : '继续查询上游任务…');
+    return taskId;
+  })();
 
   log.info('Resume failed video poll requested', {
     videoGenId: id,

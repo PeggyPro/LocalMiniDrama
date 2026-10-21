@@ -54,6 +54,12 @@ export function assertOwned(db, dramaId, type, id) {
     ).get(String(id));
     if (!row) return { ok: false, error: '任务不存在' };
     const resource = String(row.resource_id);
+    // Episode IDs and project IDs overlap. A single-episode story task is never project-scoped.
+    if (row.type === 'episode_story_generation') {
+      const target = db.prepare(`SELECT e.id FROM episodes e JOIN dramas d ON d.id = e.drama_id
+        WHERE e.id = ? AND e.drama_id = ? AND e.deleted_at IS NULL AND d.deleted_at IS NULL`).get(Number(resource), dramaIdNum);
+      return target ? { ok: true, label: row.type } : { ok: false, error: '这个任务不属于当前项目' };
+    }
     if (resource === String(dramaIdNum)) return { ok: true, label: row.type || String(id) };
     const episode = db.prepare(
       'SELECT id FROM episodes WHERE id = ? AND drama_id = ? AND deleted_at IS NULL'

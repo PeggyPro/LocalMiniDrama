@@ -1,5 +1,16 @@
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
+import {
+  episodeDraftKey,
+  createEpisodeDraft,
+  editEpisodeDraft,
+  mergeEpisodeDraft,
+  acknowledgeEpisodeDraft,
+  resolveEpisodeDraftConflict as resolveDraftConflict,
+  snapshotEpisodeDraft as snapshotDraft,
+  loadEpisodeDrafts,
+  persistEpisodeDrafts,
+} from '../utils/episodeDrafts.js'
 
 function episodeVideoKey(dramaId, episodeId) {
   if (dramaId == null || episodeId == null) return null
@@ -10,7 +21,71 @@ export const useFilmStore = defineStore('film', () => {
   const drama = ref(null)
   const currentEpisode = ref(null)
   const storyInput = ref('')
-  const scriptContent = ref('')
+  const episodeDrafts = ref(loadEpisodeDrafts())
+  watch(episodeDrafts, (drafts) => persistEpisodeDrafts(drafts), { deep: true, flush: 'sync' })
+
+  // Preserve the object identity used by title/premise/script bindings across refreshes.
+  function commitDraft(key, next) {
+    if (!key || !next) return null
+    const existing = episodeDrafts.value[key]
+    if (existing) {
+      if (existing !== next) Object.assign(existing, next)
+    } else {
+      episodeDrafts.value[key] = next
+    }
+    return episodeDrafts.value[key]
+  }
+
+  function hydrateEpisodeDraft(did, episode) {
+    const key = episodeDraftKey(did, episode?.id)
+    if (!key) return null
+    return commitDraft(key, mergeEpisodeDraft(episodeDrafts.value[key], episode))
+  }
+
+  function getEpisodeDraft(did, episodeOrId) {
+    if (episodeOrId && typeof episodeOrId === 'object') return hydrateEpisodeDraft(did, episodeOrId)
+    const key = episodeDraftKey(did, episodeOrId)
+    if (!key) return null
+    if (!episodeDrafts.value[key]) {
+      const ep = Number(drama.value?.id) === Number(did)
+        ? drama.value?.episodes?.find((e) => Number(e.id) === Number(episodeOrId))
+        : null
+      commitDraft(key, createEpisodeDraft(ep || {}))
+    }
+    return episodeDrafts.value[key]
+  }
+
+  function updateEpisodeDraft(did, eid, patch) {
+    const draft = getEpisodeDraft(did, eid)
+    return draft ? commitDraft(episodeDraftKey(did, eid), editEpisodeDraft(draft, patch)) : null
+  }
+
+  function snapshotEpisodeDraft(did, eid) {
+    const draft = getEpisodeDraft(did, eid)
+    return draft ? snapshotDraft(draft) : null
+  }
+
+  function markEpisodeDraftSaved(did, eid, serverEpisode, submittedSnapshot) {
+    const key = episodeDraftKey(did, eid)
+    const draft = getEpisodeDraft(did, eid)
+    return draft ? commitDraft(key, acknowledgeEpisodeDraft(draft, serverEpisode, submittedSnapshot)) : null
+  }
+
+  function resolveEpisodeDraftConflict(did, serverEpisode, choice) {
+    const key = episodeDraftKey(did, serverEpisode?.id)
+    if (!key) return null
+    return commitDraft(key, resolveDraftConflict(getEpisodeDraft(did, serverEpisode.id), serverEpisode, choice))
+  }
+
+  const currentEpisodeDraft = computed(() => {
+    const did = drama.value?.id
+    const eid = currentEpisode.value?.id
+    return did != null && eid != null ? getEpisodeDraft(did, eid) : null
+  })
+  const scriptContent = computed({
+    get: () => currentEpisodeDraft.value?.scriptContent ?? '',
+    set: (text) => setScriptContent(text),
+  })
   const videoResolution = ref('480p')
   /** 按 dramaId:episodeId 存储合成视频进度与状态 */
   const videoStateByKey = ref({})
@@ -51,18 +126,23 @@ export const useFilmStore = defineStore('film', () => {
 
   function setDrama(d) {
     drama.value = d
+    for (const ep of d?.episodes || []) hydrateEpisodeDraft(d.id, ep)
   }
 
   function setCurrentEpisode(ep) {
     currentEpisode.value = ep
+    if (ep && drama.value?.id != null) hydrateEpisodeDraft(drama.value.id, ep)
   }
 
   function setStoryInput(text) {
     storyInput.value = text
   }
 
+  /** User edit only. Server data must go through hydrateEpisodeDraft/setCurrentEpisode. */
   function setScriptContent(text) {
-    scriptContent.value = text
+    const did = drama.value?.id
+    const eid = currentEpisode.value?.id
+    if (did != null && eid != null) updateEpisodeDraft(did, eid, { scriptContent: text })
   }
 
   function setVideoProgress(p, dId, eId) {
@@ -101,8 +181,7 @@ export const useFilmStore = defineStore('film', () => {
     drama.value = null
     currentEpisode.value = null
     storyInput.value = ''
-    scriptContent.value = ''
-    // 保留 videoStateByKey：跨剧切换时其它项目的合成状态不丢失
+    // Drafts and video state survive project/episode switches and page unmounts.
   }
 
   return {
@@ -110,6 +189,13 @@ export const useFilmStore = defineStore('film', () => {
     currentEpisode,
     storyInput,
     scriptContent,
+    currentEpisodeDraft,
+    getEpisodeDraft,
+    updateEpisodeDraft,
+    hydrateEpisodeDraft,
+    snapshotEpisodeDraft,
+    markEpisodeDraftSaved,
+    resolveEpisodeDraftConflict,
     videoResolution,
     videoStateByKey,
     videoProgress,

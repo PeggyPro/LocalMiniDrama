@@ -1,6 +1,7 @@
 // 对应 Go application/services/drama_service.go
 
 const storageLayout = require('./storageLayout');
+const episodeRevisionService = require('./episodeRevisionService');
 const { resolveStylePreset } = require('../constants/generationStylePresets');
 const seedance2AssetGuards = require('../utils/seedance2AssetGuards');
 
@@ -307,6 +308,7 @@ function rowToDrama(r) {
     genre: r.genre,
     style: r.style || 'realistic',
     total_episodes: r.total_episodes ?? 1,
+    episodes_revision: r.episodes_revision ?? 0,
     total_duration: r.total_duration ?? 0,
     status: r.status || 'draft',
     thumbnail: r.thumbnail,
@@ -322,7 +324,9 @@ function rowToEpisode(r) {
     id: r.id,
     drama_id: r.drama_id,
     episode_number: r.episode_number,
+    revision: r.revision ?? 1,
     title: r.title,
+    source_text: r.source_text ?? null,
     script_content: r.script_content,
     description: r.description,
     duration: r.duration ?? 0,
@@ -468,7 +472,7 @@ function saveOutline(db, log, dramaId, req) {
   const drama = getDramaById(db, Number(dramaId));
   if (!drama) return false;
   const now = new Date().toISOString();
-  const tagsStr = Array.isArray(req.tags) ? JSON.stringify(req.tags) : null;
+  const tagsStr = req.tags === undefined ? drama.tags : Array.isArray(req.tags) ? JSON.stringify(req.tags) : req.tags;
   // Merge new metadata with existing metadata
   let existingMetadata = {};
   if (drama.metadata) {
@@ -647,49 +651,32 @@ function saveCharacters(db, log, dramaId, req) {
   return true;
 }
 
+function episodeResponse(row) {
+  return { ...rowToEpisode(row), episodes_revision: row.episodes_revision };
+}
+
+function createEpisode(db, log, dramaId, req = {}) {
+  const episode = episodeRevisionService.createEpisode(db, dramaId, req);
+  log.info('Episode created', { drama_id: dramaId, episode_id: episode.id });
+  return episodeResponse(episode);
+}
+
+function updateEpisode(db, log, dramaId, episodeId, req) {
+  const episode = episodeRevisionService.updateEpisode(db, dramaId, episodeId, req);
+  log.info('Episode updated', { drama_id: dramaId, episode_id: episode.id });
+  return episodeResponse(episode);
+}
+
+function deleteEpisode(db, log, dramaId, episodeId, req) {
+  const result = episodeRevisionService.deleteEpisode(db, dramaId, episodeId, req);
+  log.info('Episode deleted', { drama_id: dramaId, episode_id: result.episode_id });
+  return result;
+}
+
 function saveEpisodes(db, log, dramaId, req) {
-  const did = Number(dramaId);
-  const drama = getDramaById(db, did);
-  if (!drama) return false;
-  const episodes = req.episodes || [];
-  const now = new Date().toISOString();
-
-  // 按 episode_number upsert：保留已有分集的 id，避免关联数据（角色/场景/道具/分镜）孤岛化
-  const keptNumbers = new Set();
-  for (const ep of episodes) {
-    const num = ep.episode_number ?? 0;
-    keptNumbers.add(num);
-    // 查找已有的（包含软删除的，以防重新激活）
-    const existing = db.prepare(
-      'SELECT id FROM episodes WHERE drama_id = ? AND episode_number = ? ORDER BY deleted_at IS NOT NULL ASC, id ASC LIMIT 1'
-    ).get(did, num);
-    if (existing) {
-      // 更新已有分集，保留 id
-      db.prepare(
-        `UPDATE episodes SET title = ?, script_content = ?, description = ?, duration = ?, deleted_at = NULL, updated_at = ? WHERE id = ?`
-      ).run(ep.title || '', ep.script_content ?? null, ep.description ?? null, ep.duration ?? 0, now, existing.id);
-    } else {
-      // 新增
-      db.prepare(
-        `INSERT INTO episodes (drama_id, episode_number, title, script_content, description, duration, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?)`
-      ).run(did, num, ep.title || '', ep.script_content ?? null, ep.description ?? null, ep.duration ?? 0, now, now);
-    }
-  }
-
-  // 软删除本次未提交的分集（如用户删掉了某一集）
-  const liveEpisodes = db.prepare(
-    'SELECT id, episode_number FROM episodes WHERE drama_id = ? AND deleted_at IS NULL'
-  ).all(did);
-  for (const row of liveEpisodes) {
-    if (!keptNumbers.has(row.episode_number)) {
-      db.prepare('UPDATE episodes SET deleted_at = ? WHERE id = ?').run(now, row.id);
-    }
-  }
-
-  db.prepare('UPDATE dramas SET updated_at = ? WHERE id = ?').run(now, did);
-  log.info('Episodes saved', { drama_id: dramaId, count: episodes.length });
-  return true;
+  const saved = episodeRevisionService.saveEpisodes(db, dramaId, req);
+  log.info('Episodes saved', { drama_id: dramaId, count: saved.episodes.length });
+  return { ...saved, episodes: saved.episodes.map(rowToEpisode) };
 }
 
 function saveProgress(db, log, dramaId, req) {
@@ -865,6 +852,9 @@ module.exports = {
   getCharacters,
   saveCharacters,
   saveEpisodes,
+  createEpisode,
+  updateEpisode,
+  deleteEpisode,
   saveProgress,
   saveCanvasLayout,
   finalizeEpisode,

@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const AdmZip = require('adm-zip');
 const { importDrama } = require('../src/services/dramaImportService');
+const { exportDrama } = require('../src/services/dramaExportService');
 const dramaRoutes = require('../src/routes/drama');
 const { createEpisodeTestDb, contentSnapshot, log, makeResponse } = require('./helpers/episodeTestDb');
 
@@ -29,6 +30,7 @@ test('ZIP import validates all episode numbers/content before any DB or media wr
     [{ episode_number: 1 }, { episode_number: '01' }],
     ...[undefined, 0, -1, '1.5', '', true].map((number) => [{ episode_number: number }]),
     [{ episode_number: 1 }, { episode_number: 2, script_content: {} }],
+    [{ episode_number: 1 }, { episode_number: 2, source_text: {} }],
     [{ episode_number: 1 }, { episode_number: 2, duration: -1 }],
   ];
   const routes = dramaRoutes(db, {}, log);
@@ -52,7 +54,7 @@ test('ZIP restore allocates fresh IDs/revisions and preserves unsorted episode a
     drama: { title: '导入项目', description: '共享背景', episodes_revision: 999 },
     characters: [{ name: '同一角色' }],
     episodes: [
-      { id: 10, episode_number: '005', title: '第五集', description: '第五集梗概', script_content: '第五集原文', revision: 999,
+      { id: 10, episode_number: '005', title: '第五集', source_text: '第五集原始素材', description: '第五集梗概', script_content: '第五集原文', revision: 999,
         storyboards: [{ storyboard_number: 1, title: '第五集分镜', dialogue: '第五集台词' }] },
       { id: 11, episode_number: 2, title: '第二集', description: '第二集梗概', script_content: '第二集原文', duration: 32, revision: 888,
         storyboards: [{ storyboard_number: 1, title: '第二集分镜', dialogue: '第二集台词' }] },
@@ -71,6 +73,7 @@ test('ZIP restore allocates fresh IDs/revisions and preserves unsorted episode a
   assert.deepEqual(episodes.map((episode) => [episode.episode_number, episode.revision]), [[2, 1], [5, 1]]);
   assert.ok(episodes.every((episode) => ![1, 10, 11].includes(episode.id)));
   assert.deepEqual(episodes.map((episode) => episode.description), ['第二集梗概', '第五集梗概']);
+  assert.deepEqual(episodes.map((episode) => episode.source_text), [null, '第五集原始素材']);
   assert.equal(episodes[0].script_content, '第二集原文');
   assert.equal(episodes[0].duration, 32);
   const shots = db.prepare(`SELECT e.episode_number, s.title FROM storyboards s JOIN episodes e ON e.id = s.episode_id
@@ -80,6 +83,29 @@ test('ZIP restore allocates fresh IDs/revisions and preserves unsorted episode a
     WHERE s.drama_id = ? ORDER BY e.episode_number`).all(result.drama_id);
   assert.deepEqual(scenes, [{ episode_number: 2, location: '第二集地点' }, { episode_number: 5, location: '第五集地点' }]);
   assert.equal(db.prepare(`SELECT e.episode_number FROM props p JOIN episodes e ON e.id = p.episode_id WHERE p.drama_id = ?`).get(result.drama_id).episode_number, 2);
+  assert.deepEqual(db.prepare('SELECT * FROM episodes WHERE drama_id IN (1, 2) ORDER BY id').all(), before.episodes);
+  assert.deepEqual(writes, []);
+});
+
+test('project ZIP roundtrip preserves separate original/instructions/script fields including null and empty source', (t) => {
+  const db = createEpisodeTestDb(t);
+  const writes = prohibitFileWrites(t);
+  const source = '  原著第一段。\n\n第二段：原句与空格保留。  ';
+  db.prepare('UPDATE episodes SET source_text = ? WHERE id = 10').run(source);
+  db.prepare('UPDATE episodes SET source_text = ? WHERE id = 11').run('');
+  db.prepare('INSERT INTO episodes (drama_id, episode_number, title, description, script_content) VALUES (1, 3, ?, ?, ?)')
+    .run('无原文的旧集', '历史要求', '历史剧本');
+  const before = contentSnapshot(db);
+  const { buffer } = exportDrama(db, {}, log, 1);
+  const json = JSON.parse(new AdmZip(buffer).getEntry('project.json').getData().toString('utf8'));
+  assert.deepEqual(json.episodes.map((ep) => ep.source_text), [source, '', null]);
+  assert.deepEqual(json.episodes.map((ep) => ep.description), ['第一集梗概', '第二集梗概', '历史要求']);
+  assert.deepEqual(json.episodes.map((ep) => ep.script_content), ['第一集正文', '第二集正文', '历史剧本']);
+  const restored = importDrama(db, {}, log, buffer);
+  const fields = 'episode_number, title, source_text, description, script_content';
+  const actual = db.prepare(`SELECT ${fields} FROM episodes WHERE drama_id = ? ORDER BY episode_number`).all(restored.drama_id);
+  const expected = db.prepare(`SELECT ${fields} FROM episodes WHERE drama_id = 1 ORDER BY episode_number`).all();
+  assert.deepEqual(actual, expected);
   assert.deepEqual(db.prepare('SELECT * FROM episodes WHERE drama_id IN (1, 2) ORDER BY id').all(), before.episodes);
   assert.deepEqual(writes, []);
 });

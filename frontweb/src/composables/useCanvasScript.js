@@ -1,23 +1,26 @@
-import { ref } from 'vue'
+import { ref, watch, onScopeDispose } from 'vue'
 import { ElMessage } from 'element-plus'
 import { dramaAPI } from '@/api/drama'
 import { generationAPI } from '@/api/generation'
 import { propAPI } from '@/api/props'
 import { taskAPI } from '@/api/task'
+import { useFilmStore } from '@/stores/film'
 import { getDramaGenerationOptions } from '@/utils/canvasWorkflow'
+import { createCanvasOperationGuard } from '@/utils/canvasEpisodeScope'
 import { CANVAS_NODE_STATUS_LABELS } from '@/composables/useCanvasNodeStatus'
 
-async function pollTask(taskId, onTick, maxAttempts = 450, interval = 2000) {
+async function pollTask(taskId, scope, onTick, maxAttempts = 450, interval = 2000) {
   if (!taskId) return { status: 'completed' }
   for (let i = 0; i < maxAttempts; i++) {
+    if (!scope.isActive()) return { status: 'cancelled' }
     await new Promise((r) => setTimeout(r, interval))
-    onTick?.()
+    if (!scope.isActive()) return { status: 'cancelled' }
     try {
       const t = await taskAPI.get(taskId)
+      if (!scope.isActive()) return { status: 'cancelled' }
       if (t.status === 'completed') return { status: 'completed', result: t.result }
-      if (t.status === 'failed') {
-        return { status: 'failed', error: t.error?.message || t.error || '任务失败' }
-      }
+      if (t.status === 'failed') return { status: 'failed', error: t.error?.message || t.error || '任务失败' }
+      await onTick?.()
     } catch (e) {
       if (i === maxAttempts - 1) return { status: 'failed', error: e.message || '轮询失败' }
     }
@@ -29,178 +32,160 @@ export function scriptNodeId(episodeId) {
   return `script:${episodeId}`
 }
 
-function buildEpisodesPayload(drama, episodeId, patch) {
-  return (drama?.episodes || []).map((ep, i) => {
-    const base = {
-      episode_number: ep.episode_number ?? i + 1,
-      title: ep.title || `第${ep.episode_number ?? i + 1}集`,
-      script_content: ep.script_content || '',
-      description: ep.description ?? null,
-      duration: ep.duration ?? 0,
-    }
-    if (Number(ep.id) === Number(episodeId)) {
-      return { ...base, ...patch }
-    }
-    return base
-  })
-}
-
-/** 画布：剧本编辑 + 从剧本提取角色/场景/道具 */
+/** Shared per-episode drafts; no collection snapshots or local editor copies. */
 export function useCanvasScript(deps) {
-  const { drama, dramaId, refreshCanvas, nodeStatus } = deps
+  const { drama, dramaId, filterEpisodeId, refreshCanvas, nodeStatus } = deps
+  const film = useFilmStore()
   const scriptBusy = ref(false)
+  const busyNodes = new Set()
+  function clearBusy() {
+    for (const id of busyNodes) nodeStatus?.clear(id)
+    busyNodes.clear()
+  }
+  function setBusy(episodeId, payload) {
+    const id = scriptNodeId(episodeId)
+    busyNodes.add(id)
+    nodeStatus?.set(id, payload)
+  }
+  const guard = createCanvasOperationGuard(() => ({
+    dramaId: dramaId.value,
+    episodeId: filterEpisodeId?.value ?? null,
+  }))
+  watch(() => [dramaId.value, filterEpisodeId?.value], () => {
+    guard.invalidate()
+    clearBusy()
+    scriptBusy.value = false
+  }, { flush: 'sync' })
+  onScopeDispose(() => { guard.dispose(); clearBusy() })
 
-  function setScriptBusy(episodeId, step, message) {
-    nodeStatus?.set(scriptNodeId(episodeId), { step, message })
+  function episode(episodeId) {
+    return drama.value?.episodes?.find((ep) => Number(ep.id) === Number(episodeId))
   }
 
-  function clearScriptBusy(episodeId) {
-    nodeStatus?.clear(scriptNodeId(episodeId))
-  }
-
-  async function runExtractTask(taskId, label) {
-    if (!taskId) {
-      await refreshCanvas(true)
-      return
-    }
-    const polled = await pollTask(taskId, () => refreshCanvas(true))
-    if (polled.status !== 'completed') {
-      throw new Error(polled.error || `${label}失败`)
-    }
-    await refreshCanvas(true)
-  }
-
-  async function saveScript(episodeId, { scriptContent, title }) {
-    const did = dramaId.value
-    const d = drama.value
-    if (!did || !d || !episodeId) throw new Error('缺少项目或集数')
-
-    scriptBusy.value = true
-    setScriptBusy(episodeId, 'save_script', CANVAS_NODE_STATUS_LABELS.save_script)
+  async function persistDraft(did, episodeId, scope) {
+    const snapshot = film.snapshotEpisodeDraft(did, episodeId)
+    if (!scope.isActive()) return null
     try {
-      const payload = buildEpisodesPayload(d, episodeId, {
-        script_content: (scriptContent || '').trim(),
-        title: (title || '').trim() || undefined,
+      const saved = await dramaAPI.updateEpisode(did, episodeId, {
+        title: snapshot.title,
+        source_text: snapshot.sourceText,
+        description: snapshot.description,
+        script_content: snapshot.scriptContent,
+        expected_revision: snapshot.baseRevision,
       })
-      await dramaAPI.saveEpisodes(did, payload)
-      await refreshCanvas(true)
-      ElMessage.success('剧本已保存')
-    } finally {
-      scriptBusy.value = false
-      clearScriptBusy(episodeId)
+      // Store acknowledgements belong to the submitted IDs, even when their editor has closed.
+      film.markEpisodeDraftSaved(did, episodeId, saved, snapshot)
+      if (scope.isActive()) await refreshCanvas(true)
+      return saved
+    } catch (error) {
+      if (error.response?.status === 409 && scope.isActive()) await refreshCanvas(true)
+      throw error
     }
   }
 
-  async function _extractCharacters(episodeId, scriptContent) {
+  async function saveScript(episodeId, fields = {}) {
     const did = dramaId.value
-    const outline = (scriptContent || '').trim() || undefined
-    const res = await generationAPI.generateCharacters(did, {
-      episode_id: episodeId,
-      outline,
-    })
-    await runExtractTask(res?.task_id, '提取角色')
-  }
-
-  async function _extractScenes(episodeId) {
-    const style = getDramaGenerationOptions(drama.value).style || undefined
-    const res = await dramaAPI.extractBackgrounds(episodeId, {
-      model: undefined,
-      style,
-      language: 'zh',
-    })
-    await runExtractTask(res?.task_id, '提取场景')
-  }
-
-  async function _extractProps(episodeId) {
-    const res = await propAPI.extractFromScript(episodeId)
-    await runExtractTask(res?.task_id, '提取道具')
-  }
-
-  async function extractCharacters(episodeId, scriptContent) {
-    if (!dramaId.value || !episodeId) throw new Error('请先选择集数')
+    const ep = episode(episodeId)
+    if (!did || !ep || Number(drama.value?.id) !== Number(did)) throw new Error('缺少项目或集数')
+    film.hydrateEpisodeDraft(did, ep)
+    film.updateEpisodeDraft(did, episodeId, fields)
+    const scope = guard.capture()
     scriptBusy.value = true
-    setScriptBusy(episodeId, 'extract_chars', CANVAS_NODE_STATUS_LABELS.extract_chars)
+    setBusy(episodeId, { step: 'save_script', message: CANVAS_NODE_STATUS_LABELS.save_script })
     try {
-      await _extractCharacters(episodeId, scriptContent)
-      ElMessage.success('角色提取完成')
+      const saved = await persistDraft(did, episodeId, scope)
+      if (scope.isActive()) ElMessage.success('剧本已保存')
+      return saved
     } finally {
-      scriptBusy.value = false
-      clearScriptBusy(episodeId)
+      if (scope.isActive()) {
+        scriptBusy.value = false
+        busyNodes.delete(scriptNodeId(episodeId))
+        nodeStatus?.clear(scriptNodeId(episodeId))
+      }
     }
   }
 
-  async function extractScenes(episodeId) {
-    if (!episodeId) throw new Error('请先选择集数')
-    scriptBusy.value = true
-    setScriptBusy(episodeId, 'extract_scenes', CANVAS_NODE_STATUS_LABELS.extract_scenes)
-    try {
-      await _extractScenes(episodeId)
-      ElMessage.success('场景提取完成')
-    } finally {
-      scriptBusy.value = false
-      clearScriptBusy(episodeId)
-    }
+  async function runExtractTask(taskId, scope, label) {
+    const polled = await pollTask(taskId, scope, () => scope.isActive() && refreshCanvas(true))
+    if (!scope.isActive() || polled.status === 'cancelled') return false
+    if (polled.status !== 'completed') throw new Error(polled.error || `${label}失败`)
+    await refreshCanvas(true)
+    return scope.isActive()
   }
 
-  async function extractProps(episodeId) {
-    if (!episodeId) throw new Error('请先选择集数')
-    scriptBusy.value = true
-    setScriptBusy(episodeId, 'extract_props', CANVAS_NODE_STATUS_LABELS.extract_props)
-    try {
-      await _extractProps(episodeId)
-      ElMessage.success('道具提取完成')
-    } finally {
-      scriptBusy.value = false
-      clearScriptBusy(episodeId)
+  async function extractStep(kind, did, episodeId, scope) {
+    if (!scope.isActive()) return false
+    let res
+    if (kind === 'characters') {
+      res = await generationAPI.generateCharacters(did, {
+        episode_id: episodeId,
+        outline: film.getEpisodeDraft(did, episodeId).scriptContent.trim() || undefined,
+      })
+    } else if (kind === 'scenes') {
+      res = await dramaAPI.extractBackgrounds(episodeId, {
+        style: getDramaGenerationOptions(drama.value).style || undefined,
+        language: 'zh',
+      })
+    } else {
+      res = await propAPI.extractFromScript(episodeId)
     }
+    if (!scope.isActive()) return false
+    return runExtractTask(res?.task_id, scope, '提取素材')
   }
 
-  async function extractAll(episodeId, scriptContent) {
-    if (!episodeId) throw new Error('请先选择集数')
-    const content = (scriptContent || '').trim()
-    if (!content) throw new Error('请先填写剧本内容')
-
+  async function extract(episodeId, kinds, scriptContent) {
+    const did = dramaId.value
+    const ep = episode(episodeId)
+    if (!did || !ep || Number(drama.value?.id) !== Number(did)) throw new Error('请先选择集数')
+    const draft = film.hydrateEpisodeDraft(did, ep)
+    if (scriptContent !== undefined) film.updateEpisodeDraft(did, episodeId, { scriptContent })
+    if (!draft.scriptContent.trim()) throw new Error('请先填写剧本内容')
+    if (draft.remoteConflict) throw new Error('本集已有新版本，请先处理草稿冲突')
+    const scope = guard.capture()
     scriptBusy.value = true
     let didWork = false
+    const config = {
+      characters: ['extract_chars', '提取角色'],
+      scenes: ['extract_scenes', '提取场景'],
+      props: ['extract_props', '提取道具'],
+    }
     try {
-      if ((drama.value?.characters || []).length === 0) {
-        setScriptBusy(episodeId, 'extract_chars', '1/3 提取角色…')
-        await _extractCharacters(episodeId, content)
+      if (draft.dirty) {
+        await persistDraft(did, episodeId, scope)
+        if (!scope.isActive()) return
+        if (film.getEpisodeDraft(did, episodeId).dirty) throw new Error('保存期间剧本有新修改，请先保存后再提取素材')
+      }
+      for (const kind of kinds) {
+        if (!scope.isActive()) return
+        // One-click extraction is based on this episode's associated assets only.
+        if (kinds.length > 1 && (episode(episodeId)?.[kind] || []).length) continue
+        const [step, message] = config[kind]
+        setBusy(episodeId, { step, message })
+        if (!await extractStep(kind, did, episodeId, scope)) return
         didWork = true
       }
-      if ((drama.value?.scenes || []).length === 0) {
-        setScriptBusy(episodeId, 'extract_scenes', '2/3 提取场景…')
-        await _extractScenes(episodeId)
-        didWork = true
+      if (scope.isActive()) {
+        if (!didWork) ElMessage.info('本集角色、场景、道具均已存在，无需重复提取')
+        else {
+          const latest = episode(episodeId)
+          ElMessage.success(`提取完成：${(latest?.characters || []).length} 角色 · ${(latest?.scenes || []).length} 场景 · ${(latest?.props || []).length} 道具`)
+        }
       }
-      if ((drama.value?.props || []).length === 0) {
-        setScriptBusy(episodeId, 'extract_props', '3/3 提取道具…')
-        await _extractProps(episodeId)
-        didWork = true
-      }
-
-      if (!didWork) {
-        ElMessage.info('角色、场景、道具均已存在，无需重复提取')
-      } else {
-        ElMessage.success(
-          `提取完成：${(drama.value?.characters || []).length} 角色 · ${(drama.value?.scenes || []).length} 场景 · ${(drama.value?.props || []).length} 道具`
-        )
-      }
-    } catch (e) {
-      ElMessage.error(e?.message || '提取失败')
-      throw e
     } finally {
-      scriptBusy.value = false
-      clearScriptBusy(episodeId)
+      if (scope.isActive()) {
+        scriptBusy.value = false
+        busyNodes.delete(scriptNodeId(episodeId))
+        nodeStatus?.clear(scriptNodeId(episodeId))
+      }
     }
   }
 
   return {
     scriptBusy,
     saveScript,
-    extractCharacters,
-    extractScenes,
-    extractProps,
-    extractAll,
+    extractCharacters: (eid, text) => extract(eid, ['characters'], text),
+    extractScenes: (eid) => extract(eid, ['scenes']),
+    extractProps: (eid) => extract(eid, ['props']),
+    extractAll: (eid, text) => extract(eid, ['characters', 'scenes', 'props'], text),
   }
 }

@@ -1,13 +1,13 @@
 // A read-only view over existing work. It does not enqueue, resume, cancel or repair tasks.
 const EPISODE_TYPES = new Set([
   'storyboard_generation', 'background_extraction', 'prop_extraction',
-  'character_extraction', 'video_merge',
+  'character_extraction', 'video_merge', 'episode_story_generation',
 ]);
 const PROJECT_TYPES = new Set(['character_generation', 'story_generation']);
 const LABELS = {
   storyboard_generation: '分镜生成', background_extraction: '场景提取',
   prop_extraction: '道具提取', character_extraction: '角色提取',
-  character_generation: '角色提取', story_generation: '剧情生成',
+  character_generation: '角色提取', story_generation: '剧情生成', episode_story_generation: '本集剧情生成',
   video_merge: '视频合成', frame_prompt_generation: '帧提示词生成',
   image_generation: '图片生成', character_image: '角色图片生成',
   prop_image_generation: '道具图片生成', video_generation: '视频生成',

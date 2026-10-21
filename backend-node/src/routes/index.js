@@ -66,14 +66,15 @@ function setupRouter(cfg, db, log) {
       } else if (req.body && req.body.text) {
         text = req.body.text;
       }
-      if (!text.trim()) return response.badRequest(res, '请上传小说文本文件或提供 text 参数');
-      const title = req.body?.title || '';
-      const maxChapters = Number(req.body?.max_chapters) || 20;
+      if (typeof text !== 'string' || !text.trim()) return response.badRequest(res, '请上传小说文本文件或提供 text 参数');
+      const title = req.body?.title ?? '';
+      const maxChapters = req.body?.max_chapters;
       const aiSummarize = req.body?.ai_summarize === 'true' || req.body?.ai_summarize === true;
       const result = await novelImportService.importNovel(db, log, { text, title, maxChapters, aiSummarize });
       response.success(res, result);
     } catch (err) {
       log.error('dramas import-novel', { error: err.message });
+      if (err.code === 'BAD_REQUEST' || err.statusCode === 400) return response.badRequest(res, err.message);
       response.internalError(res, err.message);
     }
   });
@@ -83,6 +84,10 @@ function setupRouter(cfg, db, log) {
   r.get('/dramas/:id/characters', drama.getCharacters);
   r.put('/dramas/:id/characters', drama.saveCharacters);
   r.put('/dramas/:id/episodes', drama.saveEpisodes);
+  r.post('/dramas/:id/episodes', drama.createEpisode);
+  r.patch('/dramas/:id/episodes/:episodeId', drama.updateEpisode);
+  r.delete('/dramas/:id/episodes/:episodeId', drama.deleteEpisode);
+  r.post('/dramas/:id/episodes/:episodeId/generation/story', drama.generateEpisodeStory);
   r.put('/dramas/:id/progress', drama.saveProgress);
   r.put('/dramas/:id/canvas-layout', drama.saveCanvasLayout);
   r.get('/dramas/:id/props', drama.listProps);
@@ -132,6 +137,7 @@ function setupRouter(cfg, db, log) {
       response.success(res, result);
     } catch (err) {
       log.error('generation/story', { error: err.message });
+      if (err.statusCode && err.statusCode < 500) return response.error(res, err.statusCode, err.code || 'BAD_REQUEST', err.message, err.details);
       if (err.message && (err.message.includes('未配置') || err.message.includes('必填') || err.message.includes('不存在'))) {
         return response.badRequest(res, err.message);
       }
@@ -225,6 +231,7 @@ function setupRouter(cfg, db, log) {
   r.get('/tasks/:task_id', task.getTaskStatus);
   r.post('/tasks/:task_id/cancel', task.cancelTaskStatus);
   r.get('/tasks', task.getResourceTasks);
+  r.get('/tasks/resource/:resourceId', task.getResourceTasks);
 
   // ---------- scenes ----------
   r.get('/scenes/:scene_id', scenes.getOne);

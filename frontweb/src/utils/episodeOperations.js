@@ -7,13 +7,16 @@ export function prepareEpisodeImport(rows, { mode, episodes = [] }) {
     : 1
   return rows.map((row, index) => {
     const content = String(row.script_content ?? row.script ?? row.content ?? '')
-    if (!content.trim()) throw new Error(`第 ${index + 1} 个导入项没有正文`)
+    const hasSource = Object.hasOwn(row, 'source_text')
+    const source = hasSource ? String(row.source_text ?? '') : ''
+    if (!source.trim() && !content.trim()) throw new Error(`第 ${index + 1} 个导入项没有正文`)
     return {
       episode_number: start + index,
       title: String(row.title || `第${start + index}集`),
-      description: row.description == null ? null : String(row.description),
+      ...(Object.hasOwn(row, 'description') ? { description: row.description == null ? null : String(row.description) } : {}),
+      ...(hasSource ? { source_text: source } : {}),
       script_content: content,
-      duration: Number(row.duration) || 0,
+      ...(row.duration != null ? { duration: Number(row.duration) || 0 } : {}),
     }
   })
 }

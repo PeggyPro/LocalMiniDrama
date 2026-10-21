@@ -13,14 +13,16 @@
       <div class="head">
         <span class="badge">📜 剧本</span>
         <span class="ep">第 {{ data.episode?.episode_number ?? '?' }} 集</span>
+        <span v-if="draft?.dirty" class="draft-tag">未保存</span>
       </div>
+      <div v-if="draft?.remoteConflict" class="conflict-tag">服务器已有新版本，草稿已保留</div>
       <div class="preview">{{ previewText }}</div>
       <div class="meta">
         <span>{{ charCount }} 角色</span>
         <span>{{ sceneCount }} 场景</span>
         <span>{{ propCount }} 道具</span>
       </div>
-      <div class="hint">{{ showPanel ? '下方可编辑与提取' : '单击展开 · 创作起点' }}</div>
+      <div class="hint">{{ showPanel ? '下方可编辑原文、改编要求与剧本' : '单击展开 · 编辑本集' }}</div>
     </div>
     <CanvasScriptPanel
       v-if="showPanel"
@@ -34,6 +36,7 @@
 import { computed } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { useCanvasContext } from '@/composables/useCanvasContext'
+import { useFilmStore } from '@/stores/film'
 import CanvasScriptPanel from './CanvasScriptPanel.vue'
 import CanvasNodeStatusOverlay from './CanvasNodeStatusOverlay.vue'
 
@@ -45,15 +48,17 @@ const props = defineProps({
 const ctx = useCanvasContext()
 const showPanel = computed(() => ctx?.focusedNodeId?.value === props.id)
 
-const hasScript = computed(() => !!(props.data.episode?.script_content || '').trim())
+const film = useFilmStore()
+const draft = computed(() => film.getEpisodeDraft(ctx?.drama?.value?.id, props.data.episode?.id))
+const hasScript = computed(() => !!draft.value?.scriptContent.trim())
 const previewText = computed(() => {
-  if (props.data.summary) return props.data.summary
-  return hasScript.value ? '（剧本已填写）' : '暂无剧本，点击编辑'
+  const text = draft.value?.scriptContent.trim()
+  return text ? text.replace(/\s+/g, ' ').slice(0, 100) : '暂无剧本，点击编辑'
 })
 
-const charCount = computed(() => (ctx?.drama?.value?.characters || []).length)
-const sceneCount = computed(() => (ctx?.drama?.value?.scenes || []).length)
-const propCount = computed(() => (ctx?.drama?.value?.props || []).length)
+const charCount = computed(() => (props.data.episode?.characters || []).length)
+const sceneCount = computed(() => (props.data.episode?.scenes || []).length)
+const propCount = computed(() => (props.data.episode?.props || []).length)
 
 const isNodeBusy = computed(() => {
   const map = ctx?.nodeStatus?.map
@@ -104,6 +109,8 @@ const isNodeBusy = computed(() => {
   font-size: 11px;
   color: #d4d4d8;
 }
+.draft-tag, .conflict-tag { font-size: 10px; color: #fbbf24; }
+.conflict-tag { margin-bottom: 6px; }
 .preview {
   font-size: 11px;
   line-height: 1.45;

@@ -55,6 +55,7 @@ function loadService(name) {
 function generationDeps() {
   return {
     startStoryGeneration: loadService('storyGenerationService.js').startStoryGeneration,
+    startEpisodeStoryGeneration: loadService('storyGenerationService.js').startEpisodeStoryGeneration,
     generateCharacters: loadService('characterGenerationService.js').generateCharacters,
     extractBackgroundsForEpisode: loadService('backgroundExtractionService.js').extractBackgroundsForEpisode,
     generateStoryboard: loadService('episodeStoryboardService.js').generateStoryboard,
@@ -77,18 +78,35 @@ function buildTools() {
       const scope = readScope(ctx);
       return tools.executeGetCurrentProject(appDb, scope.dramaId, scope.episodeId);
     }),
-    generate_story: tool('generate_story', '为当前短剧生成剧本', empty, async (_input, ctx) => {
+    generate_story: tool('generate_story', '整剧批量生成并替换分集；仅用于用户明确要求整剧重生成', empty, async (_input, ctx) => {
       const scope = readScope(ctx);
       return tools.executeGenerateStory(appDb, appLog, scope.dramaId, generationDeps());
     }),
-    save_episode_script: tool('save_episode_script', '保存当前集的剧本', z.object({
+    generate_episode_story: tool('generate_episode_story', '根据已保存的本集原文和可选改编要求生成当前集剧本；省略 premise 使用已保存的 description，空字符串表示无改编要求。先读取当前集 revision', z.object({
+      premise: z.string().optional(),
+      expectedRevision: z.number().int().nonnegative(),
       title: z.string().optional(),
+      referencePrevious: z.boolean().optional(),
+    }), async (input, ctx) => {
+      const scope = readScope(ctx);
+      return tools.executeGenerateEpisodeStory(appDb, appLog, scope.dramaId, scope.episodeId, input, generationDeps());
+    }),
+    save_episode_script: tool('save_episode_script', '保存当前集剧本，可同时显式保存原文 sourceText 和改编要求 description，省略字段会保留原值。修改已有分集必须使用读取时的 expectedRevision', z.object({
+      title: z.string().optional(),
+      sourceText: z.string().nullable().optional(),
+      description: z.string().nullable().optional(),
       script: z.string(),
+      expectedRevision: z.number().int().nonnegative().optional(),
+      expectedCollectionRevision: z.number().int().nonnegative().optional(),
     }), async (input, ctx) => {
       const scope = readScope(ctx);
       return tools.executeSaveEpisodeScript(appDb, scope.dramaId, scope.episodeId, {
         title: input.title,
+        sourceText: input.sourceText,
+        description: input.description,
         scriptContent: input.script,
+        expectedRevision: input.expectedRevision,
+        expectedCollectionRevision: input.expectedCollectionRevision,
       });
     }),
     generate_characters: tool('generate_characters', '为当前集生成角色', empty, async (_input, ctx) => {

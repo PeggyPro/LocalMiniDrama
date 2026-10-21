@@ -3,12 +3,13 @@ const assert = require('node:assert/strict');
 const ai = require('../src/services/aiClient');
 const story = require('../src/services/storyGenerationService');
 const tasks = require('../src/services/taskService');
+const prompts = require('../src/services/promptI18n');
 const revisions = require('../src/services/episodeRevisionService');
 const { listEpisodeTasks } = require('../src/services/episodeTaskService');
 const dramaRoutes = require('../src/routes/drama');
 const { createEpisodeTestDb, contentSnapshot, log, makeResponse } = require('./helpers/episodeTestDb');
 
-const valid = JSON.stringify([{ episode: 900, id: 1, drama_id: 2, title: '生成标题', content: '生成的完整正文' }]);
+const valid = JSON.stringify([{ episode: 900, id: 1, drama_id: 2, title: '生成标题', source_text: 'AI 原文', description: 'AI 要求', content: '生成的完整正文' }]);
 const row = (db, id) => db.prepare('SELECT * FROM episodes WHERE id = ?').get(id);
 const result = (db, id) => JSON.parse(tasks.getTask(db, id).result);
 function deferred() {
@@ -28,6 +29,7 @@ function pendingBulk(db, input = {}) {
 
 test('single generation atomically updates only selected IDs, uses premise/context, and ignores model numbering', async (t) => {
   const db = createEpisodeTestDb(t);
+  db.prepare('UPDATE episodes SET title = ?, source_text = ? WHERE id = 11').run('用户标题', '第二集原始素材');
   const first = row(db, 10);
   const other = row(db, 1);
   const beforeDrama = db.prepare('SELECT * FROM dramas WHERE id = 1').get();
@@ -38,7 +40,8 @@ test('single generation atomically updates only selected IDs, uses premise/conte
   assert.equal(tasks.getTask(db, task.id).status, 'completed');
   assert.deepEqual(result(db, task.id), { applied: true, drama_id: 1, episode_id: 11, revision: 2, episode_count: 1 });
   assert.equal(row(db, 11).title, '用户标题');
-  assert.equal(row(db, 11).description, '本集独立梗概');
+  assert.equal(row(db, 11).source_text, '第二集原始素材');
+  assert.equal(row(db, 11).description, '第二集梗概');
   assert.equal(row(db, 11).script_content, '生成的完整正文');
   assert.equal(row(db, 11).episode_number, 2);
   assert.equal(row(db, 11).revision, 2);
@@ -54,15 +57,136 @@ test('single generation atomically updates only selected IDs, uses premise/conte
   assert.equal(call[5].model, 'mock-model');
 });
 
-test('previous episode is opt-in and model title is used without mutating shared project title', async (t) => {
+test('source-only generation accepts omitted or explicitly empty instructions and snapshots the stored original', async (t) => {
+  for (const body of [{ expected_revision: 1 }, { expected_revision: 1, premise: '' }]) {
+    await t.test(Object.hasOwn(body, 'premise') ? 'explicit empty' : 'omitted', async (st) => {
+      const db = createEpisodeTestDb(st);
+      const original = '  原小说第一段。\n\n第二段保留全文与排版。  ';
+      db.prepare('UPDATE episodes SET source_text = ?, description = NULL, title = ? WHERE id = 11').run(original, '');
+      let userPrompt;
+      st.mock.method(ai, 'generateText', async (...args) => { userPrompt = args[3]; return valid; });
+      const req = story.prepareEpisodeRequest(db, 1, 11, { ...body, source_text: '请求中冒充的原文' });
+      assert.equal(req.source_text, original);
+      assert.equal(req.premise, '');
+      const task = tasks.createTask(db, log, 'episode_story_generation', '11');
+      await story.processEpisodeStoryGeneration(db, log, task.id, req);
+      assert.equal(tasks.getTask(db, task.id).status, 'completed');
+      assert.ok(userPrompt.includes(original));
+      assert.doesNotMatch(userPrompt, /请求中冒充的原文/);
+      assert.match(userPrompt, /【本集原文（改编依据）】/);
+      assert.match(userPrompt, /【改编要求（可选）】/);
+      assert.equal(row(db, 11).source_text, original);
+      assert.equal(row(db, 11).description, null);
+      assert.equal(row(db, 11).title, '');
+      assert.equal(row(db, 11).script_content, '生成的完整正文');
+    });
+  }
+});
+
+test('optional premise falls back only when omitted, retains legacy instructions-only generation, and validates blanks', async (t) => {
+  const db = createEpisodeTestDb(t);
+  let userPrompt;
+  t.mock.method(ai, 'generateText', async (...args) => { userPrompt = args[3]; return valid; });
+  const fallback = story.prepareEpisodeRequest(db, 1, 11, { expected_revision: 1 });
+  assert.equal(fallback.source_text, '');
+  assert.equal(fallback.premise, '第二集梗概');
+  const task = tasks.createTask(db, log, 'episode_story_generation', '11');
+  await story.processEpisodeStoryGeneration(db, log, task.id, fallback);
+  assert.equal(tasks.getTask(db, task.id).status, 'completed');
+  assert.match(userPrompt, /第二集梗概/);
+  assert.equal(row(db, 11).source_text, null);
+  assert.equal(row(db, 11).description, '第二集梗概');
+  for (const premise of ['', ' \n\t']) {
+    assert.throws(() => story.prepareEpisodeRequest(db, 1, 11, { expected_revision: 2, premise }),
+      { statusCode: 400, code: 'BAD_REQUEST', message: '请填写本集原文或改编要求后再生成剧本' });
+  }
+  for (const premise of [null, 42, {}, []]) {
+    assert.throws(() => story.prepareEpisodeRequest(db, 1, 11, { expected_revision: 2, premise }), { statusCode: 400 });
+  }
+  db.prepare('UPDATE episodes SET source_text = ? WHERE id = 11').run('唯一原文');
+  assert.equal(story.prepareEpisodeRequest(db, 1, 11, { expected_revision: 2, premise: '' }).premise, '');
+  db.prepare('UPDATE episodes SET source_text = ?, description = ? WHERE id = 11').run(' \n', '\t');
+  assert.throws(() => story.prepareEpisodeRequest(db, 1, 11, { expected_revision: 2 }), { statusCode: 400 });
+});
+
+test('episode prompts separate original source, adaptation instructions and reference context in both languages', () => {
+  for (const language of ['zh', 'en']) {
+    const { user, system } = prompts.buildEpisodeStoryPrompts({ app: { language } }, {
+      source_text: 'original-only-marker', premise: 'instructions-only-marker',
+      title: 'human-title-marker', episode_number: 2, style: 'fantasy', type: 'adventure',
+      background: 'shared-only-marker', previous: { script_content: 'previous-only-marker' },
+    });
+    const sourceLabel = language === 'en' ? '[Original source for this episode]' : '【本集原文（改编依据）】';
+    const instructionsLabel = language === 'en' ? '[Adaptation instructions (optional)]' : '【改编要求（可选）】';
+    assert.ok(user.indexOf(sourceLabel) < user.indexOf('original-only-marker'));
+    assert.ok(user.indexOf('original-only-marker') < user.indexOf(instructionsLabel));
+    assert.ok(user.indexOf(instructionsLabel) < user.indexOf('instructions-only-marker'));
+    assert.ok(user.indexOf('instructions-only-marker') < user.indexOf('shared-only-marker'));
+    assert.ok(user.indexOf('shared-only-marker') < user.indexOf('previous-only-marker'));
+    assert.match(user, /"title":"human-title-marker"/);
+    assert.match(user, /"episode_number":2/);
+    assert.ok(user.includes(language === 'en' ? 'Fantasy' : '奇幻'));
+    assert.match(system, language === 'en' ? /Do not generate, rename or add a heading/ : /不要生成、改写标题/);
+    assert.doesNotMatch(system, /第一集标题（5-10字/);
+  }
+});
+
+test('source or instruction edits during AI leave a script-only candidate and preserve edited inputs', async (t) => {
+  for (const field of ['source_text', 'description']) {
+    await t.test(field, async (st) => {
+      const db = createEpisodeTestDb(st);
+      db.prepare('UPDATE episodes SET source_text = ? WHERE id = 11').run('saved-original-snapshot');
+      const entered = deferred(), answer = deferred();
+      let userPrompt;
+      st.mock.method(ai, 'generateText', (...args) => { userPrompt = args[3]; entered.resolve(); return answer.promise; });
+      const { req, task } = pendingEpisode(db, { premise: undefined });
+      const running = story.processEpisodeStoryGeneration(db, log, task.id, req);
+      await entered.promise;
+      revisions.updateEpisode(db, 1, 11, { [field]: 'human-edited-input', expected_revision: 1 });
+      const edited = contentSnapshot(db);
+      answer.resolve(valid);
+      await running;
+      assert.deepEqual(contentSnapshot(db), edited);
+      assert.match(userPrompt, /saved-original-snapshot/);
+      assert.match(userPrompt, /第二集梗概/);
+      assert.doesNotMatch(userPrompt, /human-edited-input/);
+      assert.equal(result(db, task.id).conflict, true);
+      assert.deepEqual(result(db, task.id).candidate, { script_content: '生成的完整正文' });
+    });
+  }
+});
+
+test('previous episode is opt-in and AI never replaces the saved episode or project title', async (t) => {
   const db = createEpisodeTestDb(t);
   let userPrompt;
   t.mock.method(ai, 'generateText', async (...args) => { userPrompt = args[3]; return valid; });
   const { req, task } = pendingEpisode(db);
   await story.processEpisodeStoryGeneration(db, log, task.id, req);
-  assert.equal(row(db, 11).title, '生成标题');
+  assert.equal(row(db, 11).title, '第二集');
+  assert.doesNotMatch(userPrompt, /\"title\":\"生成标题\"/);
   assert.doesNotMatch(userPrompt, /第一集正文/);
   assert.equal(db.prepare('SELECT title FROM dramas WHERE id = 1').get().title, '共享项目');
+});
+
+test('single generation accepts body-only JSON and leaves a blank or manually filled title unchanged', async (t) => {
+  for (const title of ['', '我填写的集标题']) {
+    await t.test(title || 'blank title', async (st) => {
+      const db = createEpisodeTestDb(st);
+      db.prepare('UPDATE episodes SET title = ? WHERE id = 11').run(title);
+      let systemPrompt;
+      st.mock.method(ai, 'generateText', async (...args) => {
+        systemPrompt = args[4];
+        return '[{"content":"只生成本集正文"}]';
+      });
+      const { req, task } = pendingEpisode(db);
+      await story.processEpisodeStoryGeneration(db, log, task.id, req);
+      assert.equal(tasks.getTask(db, task.id).status, 'completed');
+      assert.equal(row(db, 11).title, title);
+      assert.equal(row(db, 11).script_content, '只生成本集正文');
+      assert.match(systemPrompt, /集标题由用户自行填写/);
+      assert.doesNotMatch(systemPrompt, /第一集标题（5-10字/);
+    });
+  }
 });
 
 test('edit during AI preserves edited data and completes with retained conflict candidate', async (t) => {
@@ -78,7 +202,7 @@ test('edit during AI preserves edited data and completes with retained conflict 
   await running;
   assert.equal(tasks.getTask(db, task.id).status, 'completed');
   assert.deepEqual(result(db, task.id), { applied: false, conflict: true,
-    candidate: { title: '生成标题', description: '本集独立梗概', script_content: '生成的完整正文' }, drama_id: 1, episode_id: 11 });
+    candidate: { script_content: '生成的完整正文' }, drama_id: 1, episode_id: 11 });
   assert.deepEqual(contentSnapshot(db), edited);
 });
 
@@ -139,17 +263,15 @@ test('cancel before generation skips AI; a late AI exception cannot replace canc
   assert.deepEqual(tasks.getTask(db, second.task.id), cancelled);
 });
 
-test('invalid JSON, count, missing/empty content and title never alter any episode data', async (t) => {
+test('invalid JSON, count and missing/empty content never alter any episode data', async (t) => {
   const db = createEpisodeTestDb(t);
   const responses = [
     'plain prose that must never become script_content',
     '[{"title":"不完整","content":"截断',
     '[]',
     '[{"title":"A","content":"one"},{"title":"B","content":"two"}]',
-    '[{"title":"","content":"body"}]',
     '[{"title":"title","content":"  "}]',
     '[{"title":"title","script_content":"wrong field"}]',
-    '[{"title":32,"content":"body"}]',
     '[null]',
   ];
   const aiMock = t.mock.method(ai, 'generateText', async () => '');
@@ -217,6 +339,28 @@ test('single POST fixes route target, deduplicates active work, and validates be
   assert.equal(result(db, taskId).episode_id, 11);
   assert.equal(row(db, 1).script_content, '其他正文');
   assert.equal(row(db, 11).episode_number, 2);
+});
+
+test('single POST accepts source-only requests without premise and explicit empty instructions bypass fallback', async (t) => {
+  for (const premise of [undefined, '']) {
+    await t.test(premise === undefined ? 'omitted premise' : 'empty premise', async (st) => {
+      const db = createEpisodeTestDb(st);
+      db.prepare('UPDATE episodes SET source_text = ?, description = ? WHERE id = 11').run('接口原文', premise === undefined ? null : '不应进入提示词的存储要求');
+      const aiMock = st.mock.method(ai, 'generateText', async (...args) => {
+        assert.match(args[3], /接口原文/);
+        assert.doesNotMatch(args[3], /不应进入提示词的存储要求/);
+        return valid;
+      });
+      const res = makeResponse();
+      dramaRoutes(db, {}, log).generateEpisodeStory({ params: { id: '1', episodeId: '11' },
+        body: { expected_revision: 1, ...(premise !== undefined ? { premise } : {}) } }, res);
+      assert.equal(res.statusCode, 200);
+      await new Promise(setImmediate);
+      assert.equal(aiMock.mock.callCount(), 1);
+      assert.equal(tasks.getTask(db, res.payload.data.task_id).status, 'completed');
+      assert.equal(row(db, 11).description, premise === undefined ? null : '不应进入提示词的存储要求');
+    });
+  }
 });
 
 test('bulk replacement strictly validates count/content and does not apply malformed AI fallback', async (t) => {

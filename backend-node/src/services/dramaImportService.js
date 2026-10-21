@@ -4,6 +4,7 @@ const path = require('path');
 const AdmZip = require('adm-zip');
 const { randomUUID } = require('crypto');
 const storageLayout = require('./storageLayout');
+const revisions = require('./episodeRevisionService');
 
 function getStoragePath(cfg) {
   const raw = cfg?.storage?.local_path || './data/storage';
@@ -126,6 +127,10 @@ function saveExtraImages(storagePath, projectDir, category, files, zipPaths, pre
 function importDrama(db, cfg, log, zipBuffer) {
   const storagePath = getStoragePath(cfg);
   const { data, files } = parseZip(zipBuffer);
+  // Validate every episode before creating a project or writing any media. Imported
+  // IDs/revisions belong to another database and must never become local identities.
+  const episodes = revisions.normalizeEpisodes(data.episodes === undefined ? [] : data.episodes)
+    .map(({ id, ...fields }) => fields);
 
   const d = data.drama;
   const title = resolveTitle(db, d.title || '导入项目');
@@ -145,18 +150,18 @@ function importDrama(db, cfg, log, zipBuffer) {
   // 用事务包裹全部写入：任何步骤失败时整体回滚，避免部分导入
   let result;
   const runImport = db.transaction(() => {
-    result = _doImport(db, storagePath, files, data, d, title, metaStr, now, log);
+    result = _doImport(db, storagePath, files, data, episodes, d, title, metaStr, now, log);
   });
   runImport();
   return result;
 }
 
-function _doImport(db, storagePath, files, data, d, title, metaStr, now, log) {
+function _doImport(db, storagePath, files, data, episodes, d, title, metaStr, now, log) {
 
   // ---- 创建 drama ----
   const dramaInfo = db.prepare(
-    `INSERT INTO dramas (title, description, genre, style, status, tags, metadata, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO dramas (title, description, genre, style, status, tags, metadata, total_episodes, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`
   ).run(
     title,
     d.description || null,
@@ -176,6 +181,15 @@ function _doImport(db, storagePath, files, data, d, title, metaStr, now, log) {
     metadata: metaStr,
   });
 
+  // Build fresh episode IDs through the same revision transaction used by the API.
+  // Keep the ZIP array order for storyboard/asset index references, even when its
+  // episode numbers are unsorted.
+  const restored = episodes.length ? revisions.saveEpisodes(db, dramaId, {
+    episodes, mode: 'append', expected_collection_revision: 0,
+  }).episodes : [];
+  const idsByNumber = new Map(restored.map((episode) => [episode.episode_number, episode.id]));
+  const episodeIdList = episodes.map((episode) => idsByNumber.get(episode.episode_number));
+
   // ---- 导入角色 ----
   const charNewIds = []; // 按导出顺序保存新角色 id，用于恢复分镜 character_indices
   for (let i = 0; i < (data.characters || []).length; i++) {
@@ -188,16 +202,6 @@ function _doImport(db, storagePath, files, data, d, title, metaStr, now, log) {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(dramaId, c.name, c.role || null, c.description || null, c.personality || null, c.appearance || null, c.voice_style || null, c.polished_prompt || null, localPath, extraImagesJson, i, now, now);
     charNewIds.push(info.lastInsertRowid);
-  }
-
-  // ---- 导入剧集（先建好所有集，再关联角色/场景/道具） ----
-  const episodeIdList = []; // 按顺序保存新集 id
-  for (const ep of (data.episodes || [])) {
-    const epInfo = db.prepare(
-      `INSERT INTO episodes (drama_id, episode_number, title, description, script_content, duration, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(dramaId, ep.episode_number || 1, ep.title || `第${ep.episode_number || 1}集`, ep.description || null, ep.script_content || null, ep.duration || 0, now, now);
-    episodeIdList.push(epInfo.lastInsertRowid);
   }
 
   // ---- 关联角色到所有集（episode_characters） ----

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { createPinia, setActivePinia } from 'pinia'
 import { useFilmStore } from '../src/stores/film.js'
 
-const ep = (id, text, revision = 1) => ({ id, title: `集${id}`, description: `梗概${id}`, script_content: text, revision })
+const ep = (id, text, revision = 1) => ({ id, title: `集${id}`, source_text: `小说原文${id}`, description: `改编要求${id}`, script_content: text, revision })
 const open = (film, did, episodes, selected = 0) => { film.setDrama({ id: did, episodes }); film.setCurrentEpisode(episodes[selected]) }
 function createFilm() { setActivePinia(createPinia()); return useFilmStore() }
 
@@ -33,12 +33,13 @@ test('server polling updates clean drafts, preserves dirty drafts and keeps bind
   open(film, 1, [ep(11, '甲稿'), ep(22, '乙稿')])
   const dirty = film.getEpisodeDraft(1, 11)
   const clean = film.getEpisodeDraft(1, 22)
-  film.updateEpisodeDraft(1, 11, { title: '本地标题', description: '本地梗概', scriptContent: '本地稿' })
+  film.updateEpisodeDraft(1, 11, { title: '本地标题', sourceText: '本地原文', description: '本地梗概', scriptContent: '本地稿' })
   film.setDrama({ id: 1, episodes: [ep(11, '甲远端', 2), ep(22, '乙远端', 2)] })
   film.setCurrentEpisode(film.drama.episodes[0])
   assert.equal(film.getEpisodeDraft(1, 11), dirty)
   assert.equal(dirty.scriptContent, '本地稿')
   assert.equal(dirty.title, '本地标题')
+  assert.equal(dirty.sourceText, '本地原文')
   assert.equal(dirty.description, '本地梗概')
   assert.equal(dirty.remoteConflict, true)
   assert.equal(film.getEpisodeDraft(1, 22), clean)
@@ -60,6 +61,32 @@ test('save acknowledgement targets submitted IDs while another episode is select
   assert.equal(film.scriptContent, '保存期间继续输入')
   assert.equal(film.currentEpisodeDraft.baseRevision, 2)
   assert.equal(film.currentEpisodeDraft.dirty, true)
+})
+
+test('all draft fields survive save acknowledgement, refresh, episode/project switches and reset', () => {
+  const film = createFilm()
+  const episodes = [ep(11, '甲剧本'), ep(22, '乙剧本')]
+  open(film, 1, episodes)
+  const draft = film.currentEpisodeDraft
+  film.updateEpisodeDraft(1, 11, { title: '提交标题', sourceText: '提交原文', description: '', scriptContent: '提交剧本' })
+  const snapshot = film.snapshotEpisodeDraft(1, 11)
+  const latestEdits = { title: '新标题', sourceText: '新原文', description: '新要求', scriptContent: '新剧本' }
+  film.updateEpisodeDraft(1, 11, latestEdits)
+  film.setCurrentEpisode(episodes[1])
+  assert.equal(film.currentEpisodeDraft.sourceText, '小说原文22')
+  const saved = { ...ep(11, '提交剧本', 2), title: '提交标题', source_text: '提交原文', description: '' }
+  film.markEpisodeDraftSaved(1, 11, saved, snapshot)
+  film.setDrama({ id: 1, episodes: [saved, episodes[1]] })
+  open(film, 2, [ep(11, '另一个项目')])
+  film.reset()
+  open(film, 1, [saved, episodes[1]])
+  assert.equal(film.currentEpisodeDraft, draft)
+  for (const [key, value] of Object.entries(latestEdits)) assert.equal(draft[key], value)
+  assert.equal(draft.baseRevision, 2)
+  assert.equal(draft.baseSnapshot.sourceText, '提交原文')
+  assert.equal(draft.dirty, true)
+  assert.equal(draft.remoteConflict, false)
+  assert.equal(film.scriptContent, '新剧本')
 })
 
 test('explicit conflict choices use the store API and retain the reactive draft object', () => {
@@ -91,12 +118,13 @@ test('a recreated store restores session drafts before server hydration without 
   })
   const first = createFilm()
   open(first, 1, [ep(11, '原稿')])
-  first.updateEpisodeDraft(1, 11, { title: '本地标题', description: '独立梗概', scriptContent: '未保存草稿' })
+  first.updateEpisodeDraft(1, 11, { title: '本地标题', sourceText: '本地原文', description: '独立梗概', scriptContent: '未保存草稿' })
   first.reset()
   const restored = createFilm()
   open(restored, 1, [ep(11, '服务器新稿', 3)])
   assert.equal(restored.scriptContent, '未保存草稿')
   assert.equal(restored.currentEpisodeDraft.title, '本地标题')
+  assert.equal(restored.currentEpisodeDraft.sourceText, '本地原文')
   assert.equal(restored.currentEpisodeDraft.description, '独立梗概')
   assert.equal(restored.currentEpisodeDraft.baseRevision, 1)
   assert.equal(restored.currentEpisodeDraft.remoteRevision, 3)

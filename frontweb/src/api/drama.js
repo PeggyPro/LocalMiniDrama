@@ -16,8 +16,17 @@ export const dramaAPI = {
   delete(id) {
     return request.delete(`/dramas/${id}`)
   },
-  saveEpisodes(id, episodes) {
-    return request.put(`/dramas/${id}/episodes`, { episodes })
+  saveEpisodes(id, episodes, options = {}) {
+    return request.put(`/dramas/${id}/episodes`, { episodes, ...options })
+  },
+  createEpisode(id, body = {}) {
+    return request.post(`/dramas/${id}/episodes`, body)
+  },
+  updateEpisode(id, episodeId, body) {
+    return request.patch(`/dramas/${id}/episodes/${episodeId}`, body)
+  },
+  deleteEpisode(id, episodeId, body) {
+    return request.delete(`/dramas/${id}/episodes/${episodeId}`, { data: body || {} })
   },
   saveCharacters(id, data) {
     return request.put(`/dramas/${id}/characters`, data)

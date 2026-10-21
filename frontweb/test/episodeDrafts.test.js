@@ -6,7 +6,7 @@ import {
   loadEpisodeDrafts, persistEpisodeDrafts, browserDraftStorage,
 } from '../src/utils/episodeDrafts.js'
 
-const episode = (revision = 1, fields = {}) => ({ id: 7, title: '第一集', description: '梗概', script_content: '原稿', revision, ...fields })
+const episode = (revision = 1, fields = {}) => ({ id: 7, title: '第一集', source_text: '小说原文', description: '改编要求', script_content: '原稿', revision, ...fields })
 function storage() {
   const values = new Map()
   return { getItem: (key) => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) }
@@ -21,7 +21,7 @@ test('draft identity scopes equal numeric episode IDs to separate dramas', () =>
 
 test('edits to all fields become dirty and exact reversion becomes clean', () => {
   const original = createEpisodeDraft(episode())
-  const changed = editEpisodeDraft(original, { title: '新标题', description: '独立梗概', scriptContent: '本地稿' })
+  const changed = editEpisodeDraft(original, { title: '新标题', sourceText: '本地原文', description: '独立改编要求', scriptContent: '本地稿' })
   assert.equal(changed.dirty, true)
   assert.equal(original.scriptContent, '原稿')
   assert.equal(editEpisodeDraft(changed, original.baseSnapshot).dirty, false)
@@ -30,16 +30,16 @@ test('edits to all fields become dirty and exact reversion becomes clean', () =>
 
 test('clean server refresh advances all fields and rejects older revisions', () => {
   const original = createEpisodeDraft(episode(2))
-  const refreshed = mergeEpisodeDraft(original, episode(3, { title: '远端标题', description: null, script_content: '远端稿' }))
-  assert.deepEqual(snapshotEpisodeDraft(refreshed), { title: '远端标题', description: '', scriptContent: '远端稿', baseRevision: 3 })
+  const refreshed = mergeEpisodeDraft(original, episode(3, { title: '远端标题', source_text: '远端原文', description: null, script_content: '远端稿' }))
+  assert.deepEqual(snapshotEpisodeDraft(refreshed), { title: '远端标题', sourceText: '远端原文', description: '', scriptContent: '远端稿', baseRevision: 3 })
   assert.equal(refreshed.dirty, false)
   assert.equal(mergeEpisodeDraft(refreshed, episode(1)), refreshed)
 })
 
 test('dirty refresh preserves every local field and signals newest remote conflict', () => {
-  const draft = editEpisodeDraft(createEpisodeDraft(episode()), { title: '本地标题', description: '本地梗概', scriptContent: '本地稿' })
-  const conflict = mergeEpisodeDraft(draft, episode(3, { title: '远端标题', script_content: '远端稿' }))
-  assert.deepEqual(snapshotEpisodeDraft(conflict), { title: '本地标题', description: '本地梗概', scriptContent: '本地稿', baseRevision: 1 })
+  const draft = editEpisodeDraft(createEpisodeDraft(episode()), { title: '本地标题', sourceText: '本地原文', description: '本地改编要求', scriptContent: '本地稿' })
+  const conflict = mergeEpisodeDraft(draft, episode(3, { title: '远端标题', source_text: '远端原文', script_content: '远端稿' }))
+  assert.deepEqual(snapshotEpisodeDraft(conflict), { title: '本地标题', sourceText: '本地原文', description: '本地改编要求', scriptContent: '本地稿', baseRevision: 1 })
   assert.equal(conflict.dirty, true)
   assert.equal(conflict.remoteConflict, true)
   assert.equal(conflict.remoteRevision, 3)
@@ -48,17 +48,19 @@ test('dirty refresh preserves every local field and signals newest remote confli
 })
 
 test('save acknowledges the submitted snapshot while preserving typing during the save', () => {
-  const submitted = editEpisodeDraft(createEpisodeDraft(episode()), { title: '提交标题', scriptContent: '提交稿' })
+  const submitted = editEpisodeDraft(createEpisodeDraft(episode()), { title: '提交标题', sourceText: '提交原文', scriptContent: '提交稿' })
   const snapshot = snapshotEpisodeDraft(submitted)
-  const typed = editEpisodeDraft(submitted, { description: '保存中的新梗概', scriptContent: '继续输入' })
-  const acknowledged = acknowledgeEpisodeDraft(typed, episode(2, { title: '提交标题', script_content: '提交稿' }), snapshot)
+  const typed = editEpisodeDraft(submitted, { title: '继续改标题', sourceText: '保存中的新原文', description: '保存中的新要求', scriptContent: '继续输入' })
+  const acknowledged = acknowledgeEpisodeDraft(typed, episode(2, { title: '提交标题', source_text: '提交原文', script_content: '提交稿' }), snapshot)
   assert.equal(acknowledged.baseRevision, 2)
+  assert.equal(acknowledged.baseSnapshot.sourceText, '提交原文')
   assert.equal(acknowledged.baseSnapshot.scriptContent, '提交稿')
-  assert.equal(acknowledged.title, '提交标题')
-  assert.equal(acknowledged.description, '保存中的新梗概')
+  assert.equal(acknowledged.title, '继续改标题')
+  assert.equal(acknowledged.sourceText, '保存中的新原文')
+  assert.equal(acknowledged.description, '保存中的新要求')
   assert.equal(acknowledged.scriptContent, '继续输入')
   assert.equal(acknowledged.dirty, true)
-  const saved = acknowledgeEpisodeDraft(submitted, episode(2, { title: '提交标题', script_content: '提交稿' }), snapshot)
+  const saved = acknowledgeEpisodeDraft(submitted, episode(2, { title: '提交标题', source_text: '提交原文', script_content: '提交稿' }), snapshot)
   assert.equal(saved.dirty, false)
 })
 
@@ -81,11 +83,13 @@ test('a newer remote version remains conflicted after an earlier save acknowledg
 })
 
 test('explicit local conflict resolution rebases and server choice discards edits cleanly', () => {
-  const edited = editEpisodeDraft(createEpisodeDraft(episode()), { title: '本地标题', description: '本地梗概', scriptContent: '本地稿' })
-  const remote = episode(4, { title: '远端标题', script_content: '远端稿' })
+  const edited = editEpisodeDraft(createEpisodeDraft(episode()), { title: '本地标题', sourceText: '本地原文', description: '本地梗概', scriptContent: '本地稿' })
+  const remote = episode(4, { title: '远端标题', source_text: '远端原文', script_content: '远端稿' })
   const conflict = mergeEpisodeDraft(edited, remote)
   const local = resolveEpisodeDraftConflict(conflict, remote, 'local')
   assert.equal(local.title, '本地标题')
+  assert.equal(local.sourceText, '本地原文')
+  assert.equal(local.baseSnapshot.sourceText, '远端原文')
   assert.equal(local.description, '本地梗概')
   assert.equal(local.scriptContent, '本地稿')
   assert.equal(local.baseRevision, 4)
@@ -93,6 +97,7 @@ test('explicit local conflict resolution rebases and server choice discards edit
   assert.equal(local.remoteConflict, false)
   assert.equal(local.dirty, true)
   const server = resolveEpisodeDraftConflict(conflict, remote, 'server')
+  assert.equal(server.sourceText, '远端原文')
   assert.equal(server.scriptContent, '远端稿')
   assert.equal(server.baseRevision, 4)
   assert.equal(server.dirty, false)
@@ -127,6 +132,99 @@ test('malformed or partially malformed persisted drafts fail safely and preserve
     '1:7': valid, 'invalid': valid, '1:8': { title: 3 }, '1:9': null,
   } }))
   assert.deepEqual(loadEpisodeDrafts(session), { '1:7': valid })
+})
+
+test('source, instructions and output have independent normalization, edits and exact reversion', () => {
+  const draft = createEpisodeDraft(episode())
+  assert.equal(draft.sourceText, '小说原文')
+  assert.equal(draft.description, '改编要求')
+  assert.equal(draft.scriptContent, '原稿')
+  assert.equal(createEpisodeDraft({ sourceText: '前端原文', source_text: '后端原文' }).sourceText, '前端原文')
+  assert.deepEqual(snapshotEpisodeDraft(createEpisodeDraft({ source_text: '只有原文' })), {
+    title: '', sourceText: '只有原文', description: '', scriptContent: '', baseRevision: 0,
+  })
+  assert.equal(createEpisodeDraft({ description: '仅要求', script_content: '仅输出' }).sourceText, '')
+  for (const key of ['title', 'sourceText', 'description', 'scriptContent']) {
+    const edited = editEpisodeDraft(draft, { [key]: '' })
+    assert.equal(edited.dirty, true, key)
+    for (const other of ['title', 'sourceText', 'description', 'scriptContent'].filter((field) => field !== key)) {
+      assert.equal(edited[other], draft[other], `${key} must not change ${other}`)
+    }
+    assert.equal(editEpisodeDraft(edited, { [key]: draft[key] }).dirty, false, key)
+  }
+})
+
+test('source-only edits during save remain dirty while submitted instructions/output are acknowledged', () => {
+  const submitted = editEpisodeDraft(createEpisodeDraft(episode()), { description: '', scriptContent: '已提交剧本' })
+  const snapshot = snapshotEpisodeDraft(submitted)
+  const typed = editEpisodeDraft(submitted, { sourceText: '' })
+  const saved = acknowledgeEpisodeDraft(typed, episode(2, { description: '', script_content: '已提交剧本' }), snapshot)
+  assert.equal(saved.sourceText, '')
+  assert.equal(saved.baseSnapshot.sourceText, '小说原文')
+  assert.equal(saved.description, '')
+  assert.equal(saved.scriptContent, '已提交剧本')
+  assert.equal(saved.dirty, true)
+  const final = acknowledgeEpisodeDraft(saved, episode(3, { source_text: '', description: '', script_content: '已提交剧本' }), snapshotEpisodeDraft(saved))
+  assert.equal(final.dirty, false)
+  assert.equal(acknowledgeEpisodeDraft(editEpisodeDraft(final, { sourceText: '新原文' }), episode(2), snapshot).sourceText, '新原文')
+})
+
+function loadLegacyDrafts(patches = {}) {
+  const session = storage()
+  const baseSnapshot = { title: '第一集', description: '旧要求', scriptContent: '旧剧本' }
+  const old = { ...baseSnapshot, baseSnapshot, baseRevision: 1, dirty: false, remoteConflict: false, remoteRevision: null, ...patches }
+  session.setItem(EPISODE_DRAFT_STORAGE_KEY, JSON.stringify({ version: 1, drafts: { '1:7': old } }))
+  return { session, drafts: loadEpisodeDrafts(session) }
+}
+
+test('legacy persisted v1 records gain empty source in draft and baseline without losing edits or adding dirtiness', () => {
+  for (const patch of [{}, { title: '未保存标题' }, { description: '未保存要求' }, { scriptContent: '未保存剧本' }]) {
+    const { session, drafts } = loadLegacyDrafts(patch)
+    const draft = drafts['1:7']
+    assert.ok(draft, 'legacy record must not be discarded')
+    assert.equal(draft.sourceText, '')
+    assert.equal(draft.baseSnapshot.sourceText, '')
+    assert.equal(draft.sourceTextNeedsHydration, true)
+    assert.equal(draft.dirty, Object.keys(patch).length > 0)
+    for (const [field, value] of Object.entries(patch)) assert.equal(draft[field], value)
+    assert.equal(persistEpisodeDrafts(drafts, session), true)
+    assert.deepEqual(loadEpisodeDrafts(session), drafts, 'migration metadata survives a reload before hydration')
+  }
+})
+
+test('legacy dirty hydration adopts newly introduced server source without clobbering unsaved fields', () => {
+  for (const serverRevision of [1, 3]) {
+    const { drafts } = loadLegacyDrafts({ title: '未保存标题', description: '未保存要求', scriptContent: '未保存剧本' })
+    const server = episode(serverRevision, { source_text: '服务器小说原文' })
+    const hydrated = mergeEpisodeDraft(drafts['1:7'], server)
+    assert.deepEqual(snapshotEpisodeDraft(hydrated), {
+      title: '未保存标题', sourceText: '服务器小说原文', description: '未保存要求', scriptContent: '未保存剧本', baseRevision: 1,
+    })
+    assert.equal(hydrated.baseSnapshot.sourceText, '服务器小说原文')
+    assert.equal(hydrated.sourceTextNeedsHydration, false)
+    assert.equal(hydrated.dirty, true)
+    assert.equal(hydrated.remoteConflict, serverRevision > 1)
+    const local = resolveEpisodeDraftConflict(hydrated, server, 'local')
+    assert.equal(local.sourceText, '服务器小说原文', 'keeping legacy edits must not erase the server source')
+    assert.equal(local.scriptContent, '未保存剧本')
+  }
+  const { drafts } = loadLegacyDrafts()
+  const clean = mergeEpisodeDraft(drafts['1:7'], episode(1))
+  assert.equal(clean.sourceText, '小说原文')
+  assert.equal(clean.dirty, false)
+})
+
+test('legacy source hydration preserves source typed before hydration and ignores stale server data', () => {
+  const { drafts } = loadLegacyDrafts({ description: '未保存要求' })
+  const typed = editEpisodeDraft(drafts['1:7'], { sourceText: '刚输入的原文' })
+  assert.equal(mergeEpisodeDraft(typed, episode(0)), typed)
+  const hydrated = mergeEpisodeDraft(typed, episode(2))
+  assert.equal(hydrated.sourceText, '刚输入的原文')
+  assert.equal(hydrated.baseSnapshot.sourceText, '小说原文')
+  assert.equal(hydrated.description, '未保存要求')
+  assert.equal(hydrated.remoteConflict, true)
+  const resolved = resolveEpisodeDraftConflict(typed, episode(2), 'local')
+  assert.equal(resolved.sourceText, '刚输入的原文')
 })
 
 test('no window, storage security errors and quota errors are non-fatal', (t) => {

@@ -1,6 +1,6 @@
 // 与 Go pkg/ai + application/services/ai_service 对齐：读取 ai_service_configs，调用 OpenAI 兼容的 chat completions
 const aiConfigService = require('./aiConfigService');
-const { applyDeepSeekChatOptions } = require('./deepseekConfig');
+const { applyDeepSeekChatOptions, parseSettings } = require('./deepseekConfig');
 const { applyReasoningEffort } = require('./reasoningEffort');
 const { flattenModelIds, pickModelId, remapArkModelId } = require('./modelId');
 const https = require('https');
@@ -118,19 +118,37 @@ function postJSONWithTimeout(url, headers, body, timeoutMs = 600000) {
   return postBodyWithTimeout(url, headers, payload, timeoutMs);
 }
 
+const DEFAULT_TEXT_FIRST_RESPONSE_TIMEOUT_MS = 300000;
+const DEFAULT_TEXT_SILENCE_TIMEOUT_MS = 180000;
+
+function validTimeoutMs(value, fallback) {
+  if (typeof value !== 'number' && typeof value !== 'string') return fallback;
+  const ms = Number(value);
+  // Node 超过 32 位计时上限会退化成 1ms；非法配置必须回退，不能造成即时超时。
+  return Number.isFinite(ms) && ms >= 1 && ms <= 2147483647 ? Math.floor(ms) : fallback;
+}
+
+function getTextStreamTimeouts(config, options) {
+  const settings = parseSettings(config.settings);
+  return {
+    firstResponseTimeoutMs: validTimeoutMs(options.first_response_timeout_ms,
+      validTimeoutMs(settings.first_response_timeout_ms, DEFAULT_TEXT_FIRST_RESPONSE_TIMEOUT_MS)),
+    silenceTimeoutMs: validTimeoutMs(options.silence_timeout_ms,
+      validTimeoutMs(settings.silence_timeout_ms, DEFAULT_TEXT_SILENCE_TIMEOUT_MS)),
+  };
+}
+
 /**
  * 用 SSE 流式输出（stream: true）请求 OpenAI 兼容接口。
- * 流式模式下 socket 每收到一个 token 就重置静默计时器，只要模型在生成就不会超时，
- * 彻底解决分镜等长耗时任务的 "fetch failed / timeout" 问题。
- * silenceTimeoutMs：连续多少毫秒无任何数据才判定超时（默认 60 秒）。
+ * 首次正文前使用较长的静默窗口，正文开始后使用常规静默窗口。
+ * 每次收到原始数据（包括推理片段和心跳）都续期；仅响应头不算输出。
  */
-function postJSONStream(url, headers, body, silenceTimeoutMs = 60000, onProgress = null) {
+function postJSONStream(url, headers, body, timeouts, onProgress = null) {
+  const { firstResponseTimeoutMs, silenceTimeoutMs } = timeouts;
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
     const mod = parsed.protocol === 'https:' ? https : http;
-    // 强制开启流式输出
-    const streamBody = { ...body, stream: true };
-    const bodyStr = JSON.stringify(streamBody);
+    const bodyStr = JSON.stringify({ ...body, stream: true });
     const reqHeaders = {
       'Content-Type': 'application/json',
       'Content-Length': Buffer.byteLength(bodyStr),
@@ -147,67 +165,99 @@ function postJSONStream(url, headers, body, silenceTimeoutMs = 60000, onProgress
     };
 
     let silenceTimer = null;
-    const resetSilenceTimer = () => {
-      if (silenceTimer) clearTimeout(silenceTimer);
-      silenceTimer = setTimeout(() => {
+    let settled = false;
+    let firstToken = true;
+    const settle = (error, result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(silenceTimer);
+      if (error) {
+        reject(error);
         req.destroy();
-        reject(new Error(`AI stream silence timeout after ${silenceTimeoutMs}ms`));
-      }, silenceTimeoutMs);
+      } else {
+        resolve(result);
+      }
+    };
+    const resetSilenceTimer = () => {
+      if (settled) return;
+      clearTimeout(silenceTimer);
+      const timeoutMs = firstToken ? firstResponseTimeoutMs : silenceTimeoutMs;
+      silenceTimer = setTimeout(() => {
+        const phase = firstToken ? 'first response' : 'silence';
+        const hint = firstToken
+          ? '等待模型首次正文超时，请检查中转服务或降低推理强度'
+          : '模型输出中断，请检查上游服务或网络连接';
+        const error = new Error(`AI stream ${phase} timeout after ${timeoutMs}ms（${hint}）`);
+        error.code = 'AI_STREAM_TIMEOUT';
+        error.phase = firstToken ? 'first_response' : 'stream';
+        error.timeoutMs = timeoutMs;
+        settle(error);
+      }, timeoutMs);
     };
 
     const req = mod.request(options, (res) => {
+      if (settled) { res.destroy(); return; }
       const statusCode = res.statusCode;
-      // 非 2xx 时先读完整 body 再报错（可能是 JSON 错误信息）
+      res.on('error', (error) => settle(error));
+      // 非 2xx 时先读完整 body 再报错（可能是 JSON 错误信息）。
       if (statusCode < 200 || statusCode >= 300) {
         const errChunks = [];
-        res.on('data', (c) => errChunks.push(c));
-        res.on('end', () => {
-          clearTimeout(silenceTimer);
-          reject(new Error(`HTTP ${statusCode}: ${Buffer.concat(errChunks).toString('utf-8').slice(0, 500)}`));
+        res.on('data', (chunk) => {
+          resetSilenceTimer();
+          errChunks.push(chunk);
         });
+        res.on('end', () => settle(new Error(`HTTP ${statusCode}: ${Buffer.concat(errChunks).toString('utf-8').slice(0, 500)}`)));
         return;
       }
 
       let accumulated = '';
       let sseBuffer = '';
-      let firstToken = true;
-      resetSilenceTimer();
+      // 交给 Node 的增量解码器处理跨网络包的中文字符。
+      res.setEncoding('utf8');
+      const consumeLine = (line) => {
+        if (settled) return;
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data:')) return;
+        const data = trimmed.slice(5).trim();
+        if (data === '[DONE]') {
+          settle(null, { status: statusCode, body: accumulated });
+          // SSE 已完成，无需等待中转站关闭 HTTP 连接。
+          res.destroy();
+          return;
+        }
+        let evt;
+        try { evt = JSON.parse(data); } catch (_) { return; }
+        const delta = evt.choices?.[0]?.delta?.content;
+        if (typeof delta !== 'string' || !delta) return;
+        if (firstToken) {
+          firstToken = false;
+          resetSilenceTimer();
+          if (onProgress) onProgress(0, 'first_token', '');
+        }
+        accumulated += delta;
+        if (onProgress) onProgress(accumulated.length, null, accumulated);
+      };
 
       res.on('data', (chunk) => {
+        if (settled) return;
         resetSilenceTimer();
-        sseBuffer += chunk.toString('utf-8');
-        // 按行解析 SSE
+        sseBuffer += chunk;
         const lines = sseBuffer.split('\n');
-        sseBuffer = lines.pop(); // 保留不完整的最后一行
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed.startsWith('data:')) continue;
-          const data = trimmed.slice(5).trim();
-          if (data === '[DONE]') continue;
-          try {
-            const evt = JSON.parse(data);
-            const delta = evt.choices?.[0]?.delta?.content;
-            if (delta) {
-              if (firstToken) {
-                firstToken = false;
-                if (onProgress) onProgress(0, 'first_token', '');
-              }
-              accumulated += delta;
-              if (onProgress) onProgress(accumulated.length, null, accumulated);
-            }
-          } catch (_) { /* 忽略无法解析的行 */ }
-        }
+        sseBuffer = lines.pop();
+        try {
+          for (const line of lines) consumeLine(line);
+        } catch (error) { settle(error); }
       });
-
       res.on('end', () => {
-        clearTimeout(silenceTimer);
-        resolve({ status: statusCode, body: accumulated });
+        try {
+          if (sseBuffer) consumeLine(sseBuffer);
+          settle(null, { status: statusCode, body: accumulated });
+        } catch (error) { settle(error); }
       });
-      res.on('error', (e) => { clearTimeout(silenceTimer); reject(e); });
     });
 
-    req.on('error', (e) => { clearTimeout(silenceTimer); reject(e); });
-    resetSilenceTimer(); // 连接建立阶段也需要计时
+    req.on('error', (error) => settle(error));
+    resetSilenceTimer(); // 连接建立和等待响应头期间同样使用首次正文窗口。
     req.write(bodyStr);
     req.end();
   });
@@ -461,8 +511,12 @@ async function generateText(db, log, serviceType, userPrompt, systemPrompt, opti
     ...(json_mode ? { response_format: { type: 'json_object' } } : {}),
   };
   body = applyVolcChatOptions(config, applyDeepSeekChatOptions(config, applyReasoningEffort(config, body)));
+  const timeouts = getTextStreamTimeouts(config, options);
   const startMs = Date.now();
-  log.info('AI generateText request', { url: url.slice(0, 60), model, max_tokens: finalMaxTokens ?? '(model default)', json_mode, stream: true });
+  log.info('AI generateText request', {
+    url: url.slice(0, 60), model, max_tokens: finalMaxTokens ?? '(model default)', json_mode, stream: true,
+    first_response_timeout_ms: timeouts.firstResponseTimeoutMs, silence_timeout_ms: timeouts.silenceTimeoutMs,
+  });
   const onProgress = (receivedLen, event, accumulated) => {
     if (event === 'first_token') {
       log.info('AI stream first token', { model, ttft_ms: Date.now() - startMs });
@@ -474,7 +528,7 @@ async function generateText(db, log, serviceType, userPrompt, systemPrompt, opti
     if (streamCallback && accumulated) streamCallback(accumulated);
   };
   const send = (b) =>
-    postJSONStream(url, { Authorization: 'Bearer ' + (config.api_key || '') }, b, 60000, onProgress);
+    postJSONStream(url, { Authorization: 'Bearer ' + (config.api_key || '') }, b, timeouts, onProgress);
   let res;
   try {
     res = await send(body);
@@ -567,7 +621,7 @@ async function streamGenerateText(db, log, serviceType, userPrompt, systemPrompt
     ...(json_mode ? { response_format: { type: 'json_object' } } : {}),
   };
   body = applyVolcChatOptions(config, applyDeepSeekChatOptions(config, applyReasoningEffort(config, body)));
-  const silenceMs = options.silence_timeout_ms != null ? Number(options.silence_timeout_ms) : 120000;
+  const timeouts = getTextStreamTimeouts(config, options);
   const startMs = Date.now();
   log.info('AI streamGenerateText request', {
     url: url.slice(0, 60),
@@ -575,6 +629,8 @@ async function streamGenerateText(db, log, serviceType, userPrompt, systemPrompt
     max_tokens: finalMaxTokens ?? '(model default)',
     json_mode,
     stream: true,
+    first_response_timeout_ms: timeouts.firstResponseTimeoutMs,
+    silence_timeout_ms: timeouts.silenceTimeoutMs,
   });
   let lastLen = 0;
   const onProgress = (receivedLen, event, accumulated) => {
@@ -587,7 +643,7 @@ async function streamGenerateText(db, log, serviceType, userPrompt, systemPrompt
     if (onDelta && delta) onDelta(delta);
   };
   const send = (b) =>
-    postJSONStream(url, { Authorization: 'Bearer ' + (config.api_key || '') }, b, silenceMs, onProgress);
+    postJSONStream(url, { Authorization: 'Bearer ' + (config.api_key || '') }, b, timeouts, onProgress);
   let res;
   try {
     res = await send(body);

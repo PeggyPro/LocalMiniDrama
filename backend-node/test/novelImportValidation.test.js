@@ -49,6 +49,15 @@ describe('novel import validation and complete episode input', () => {
     ]);
   });
 
+  it('recognizes numbered episode headings like chapter headings and retains the preface', async (t) => {
+    const ai = t.mock.method(aiClient, 'generateText', () => { throw new Error('must not call AI'); });
+    const result = await importNovel(null, log, { text: '序言。\n第1集 开场\n开场原文。\n第二集 结束\n最后原文。', aiSummarize: false });
+    assert.deepEqual(result.chapters.map(({ title, content }) => ({ title, content })), [
+      { title: '序章', content: '序言。' }, { title: '第1集 开场', content: '开场原文。' }, { title: '第二集 结束', content: '最后原文。' },
+    ]);
+    assert.equal(ai.mock.callCount(), 0);
+  });
+
   it('uses complete text as one episode when there are no chapter headings', async () => {
     const body = '没有章节标题的整篇小说正文。'.repeat(100);
     const result = await importNovel(null, log, { text: body });

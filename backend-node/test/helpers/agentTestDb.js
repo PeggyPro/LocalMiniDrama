@@ -9,6 +9,9 @@ function createAgentTestDb() {
       style TEXT,
       metadata TEXT,
       description TEXT,
+      episodes_revision INTEGER NOT NULL DEFAULT 0,
+      total_episodes INTEGER DEFAULT 0,
+      updated_at TEXT,
       deleted_at TEXT
     );
     CREATE TABLE episodes (
@@ -16,8 +19,14 @@ function createAgentTestDb() {
       drama_id INTEGER,
       episode_number INTEGER,
       title TEXT,
+      source_text TEXT,
       script_content TEXT,
       description TEXT,
+      revision INTEGER NOT NULL DEFAULT 1,
+      duration INTEGER DEFAULT 0,
+      status TEXT DEFAULT 'draft',
+      created_at TEXT,
+      updated_at TEXT,
       deleted_at TEXT
     );
     CREATE TABLE characters (

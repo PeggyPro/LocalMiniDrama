@@ -87,7 +87,7 @@ describe('videoService.resumeFailedVideoPoll', () => {
     assert.equal(result.status, 400);
   });
 
-  it('resets failed row to processing and restores async task', () => {
+  it('resumes with a new tracking task and leaves terminal task history unchanged', () => {
     const db = createTestDb();
     const now = new Date().toISOString();
     db.prepare(
@@ -106,11 +106,44 @@ describe('videoService.resumeFailedVideoPoll', () => {
     assert.equal(result.item.status, 'processing');
     assert.equal(result.item.error_msg, '');
     assert.equal(result.item.can_resume_poll, false);
-    assert.equal(result.item.task_id, 'task-uuid-1');
+    assert.notEqual(result.item.task_id, 'task-uuid-1');
 
-    const task = db.prepare('SELECT status, progress, message, error FROM async_tasks WHERE id = ?').get('task-uuid-1');
+    const previous = db.prepare('SELECT * FROM async_tasks WHERE id = ?').get('task-uuid-1');
+    assert.equal(previous.status, 'failed');
+    assert.equal(previous.error, '超时或失败');
+    const task = db.prepare('SELECT status, progress, message, error FROM async_tasks WHERE id = ?').get(result.item.task_id);
     assert.equal(task.status, 'processing');
     assert.equal(task.progress, 10);
+    assert.equal(task.error, null);
     assert.match(String(task.message || ''), /继续查询/);
+    // Repeated clicks before the scheduled poll starts do not allocate another attempt.
+    assert.equal(videoService.resumeFailedVideoPoll(db, silentLog, 1).item.task_id, result.item.task_id);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM async_tasks').get().n, 2);
+  });
+
+  it('startup recovery creates a new tracking attempt after orphaned tasks were failed', async () => {
+    const db = createTestDb();
+    const videoClient = require('../src/services/videoClient');
+    const getConfig = videoClient.getDefaultVideoConfig;
+    videoClient.getDefaultVideoConfig = () => null;
+    try {
+      db.prepare(`INSERT INTO async_tasks (id, type, status, error, resource_id)
+        VALUES ('before-restart', 'video_generation', 'failed', '服务重启后任务中断', '1')`).run();
+      db.prepare(`INSERT INTO video_generations (drama_id, status, task_id, provider_task_id)
+        VALUES (1, 'processing', 'before-restart', 'existing-provider-task')`).run();
+      videoService.resumeProcessingVideoGenerations(db, silentLog);
+      await new Promise((resolve) => setImmediate(resolve));
+      const video = db.prepare('SELECT * FROM video_generations WHERE id = 1').get();
+      assert.notEqual(video.task_id, 'before-restart');
+      const previous = db.prepare('SELECT * FROM async_tasks WHERE id = ?').get('before-restart');
+      assert.equal(previous.status, 'failed');
+      assert.equal(previous.error, '服务重启后任务中断');
+      const current = db.prepare('SELECT * FROM async_tasks WHERE id = ?').get(video.task_id);
+      assert.equal(current.type, 'video_generation');
+      assert.equal(current.error, '未配置视频模型');
+    } finally {
+      videoClient.getDefaultVideoConfig = getConfig;
+      db.close();
+    }
   });
 });

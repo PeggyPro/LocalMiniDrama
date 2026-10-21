@@ -50,7 +50,7 @@ const has = (object, key) => Object.prototype.hasOwnProperty.call(object, key) &
 function contentFields(input, withDuration = false) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw apiError(400, 'BAD_REQUEST', '分集必须为对象');
   const fields = {};
-  for (const key of ['title', 'description', 'script_content']) {
+  for (const key of ['title', 'source_text', 'description', 'script_content']) {
     if (!has(input, key)) continue;
     if (input[key] !== null && typeof input[key] !== 'string') throw apiError(400, 'BAD_REQUEST', `${key} 必须为文本或 null`);
     fields[key] = key === 'title' ? input[key] ?? '' : input[key];
@@ -87,9 +87,9 @@ function touchCollection(db, dramaId, now) {
 
 function insertEpisode(db, dramaId, number, fields, now) {
   const info = db.prepare(`INSERT INTO episodes
-    (drama_id, episode_number, title, description, script_content, duration, status, revision, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, 'draft', 1, ?, ?)`)
-    .run(dramaId, number, fields.title ?? `第${number}集`, fields.description ?? null, fields.script_content ?? null, fields.duration ?? 0, now, now);
+    (drama_id, episode_number, title, source_text, description, script_content, duration, status, revision, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', 1, ?, ?)`)
+    .run(dramaId, number, fields.title ?? `第${number}集`, fields.source_text ?? null, fields.description ?? null, fields.script_content ?? null, fields.duration ?? 0, now, now);
   return Number(info.lastInsertRowid);
 }
 

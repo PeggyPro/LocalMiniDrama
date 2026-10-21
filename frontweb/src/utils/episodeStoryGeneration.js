@@ -1,6 +1,6 @@
 /** Runs one fixed episode request. Navigation only suppresses UI work, never retargets it. */
 export async function generateEpisodeStory({
-  dramaId, episodeId, expectedRevision, premise, title, storyStyle, storyType,
+  dramaId, episodeId, expectedRevision, premise, sourceText, storyStyle, storyType,
   referencePrevious = false, dramaTitle = '', episodeNumber,
 }, { submit, poll, isActive = () => true, onApplied, onCandidate }) {
   const did = Number(dramaId)
@@ -11,10 +11,10 @@ export async function generateEpisodeStory({
     throw new Error('请先选择当前集')
   }
   if (!Number.isSafeInteger(revision) || revision < 1) throw new Error('请刷新本集后再生成')
-  if (!text) throw new Error('请先输入本集创作要求')
+  if (!text && !String(sourceText ?? '').trim()) throw new Error('请先填写本集原文或改编要求')
   if (!isActive()) return { ok: false, scopeChanged: true }
   const response = await submit(did, eid, {
-    premise: text, title: title || undefined, expected_revision: revision,
+    premise: text, expected_revision: revision,
     reference_previous: !!referencePrevious,
     style: storyStyle || undefined, type: storyType || undefined,
   })

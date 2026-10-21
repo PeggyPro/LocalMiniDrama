@@ -9,12 +9,14 @@ describe('agent tools', () => {
     const { executeGetCurrentProject, executeSaveEpisodeScript } = await import('../src/mastra/tools.mjs');
     const db = createAgentTestDb();
     const ids = seedTwoDramas(db);
-    db.prepare('UPDATE episodes SET script_content = ? WHERE id = ?').run('字'.repeat(12001), ids.episodeA1);
+    db.prepare('UPDATE episodes SET script_content = ?, source_text = ? WHERE id = ?').run('字'.repeat(12001), '源'.repeat(12001), ids.episodeA1);
 
     const current = executeGetCurrentProject(db, ids.dramaA, ids.episodeA1);
     assert.equal(current.ok, true);
     assert.equal(current.project.script.length, 12000);
     assert.equal(current.project.scriptTruncated, true);
+    assert.equal(current.project.sourceText, '源'.repeat(12000));
+    assert.equal(current.project.sourceTextTruncated, true);
     assert.deepEqual(current.project.episodes.map((ep) => ep.id), [ids.episodeA1, ids.episodeA2]);
     assert.deepEqual(current.project.characters.map((c) => c.id), [ids.characterA]);
     assert.equal(current.project.characters[0].name, '甲角');
@@ -25,6 +27,8 @@ describe('agent tools', () => {
     assert.equal(listed.ok, true);
     assert.equal(listed.project.episodeSpecified, false);
     assert.equal(listed.project.script, '');
+    assert.equal(listed.project.sourceText, '');
+    assert.equal(listed.project.sourceTextTruncated, false);
     assert.deepEqual(listed.project.episodes.map((ep) => ep.id), [ids.episodeA1, ids.episodeA2]);
 
     const only = executeGetCurrentProject(db, ids.dramaB, null);
@@ -35,18 +39,34 @@ describe('agent tools', () => {
     assert.equal(refused.error, '请指定哪一集');
     assert.equal(db.prepare('SELECT script_content FROM episodes WHERE id = ?').get(ids.episodeA1).script_content.length, 12001);
 
-    executeSaveEpisodeScript(db, ids.dramaA, ids.episodeA1, { scriptContent: '新剧本', dramaId: ids.dramaB });
+    const saved = executeSaveEpisodeScript(db, ids.dramaA, ids.episodeA1, { scriptContent: '新剧本', expectedRevision: 1, dramaId: ids.dramaB });
+    assert.equal(saved.ok, true);
+    assert.equal(saved.revision, 2);
+    assert.equal(saved.episodesRevision, 1);
+    assert.equal(db.prepare('SELECT source_text FROM episodes WHERE id = ?').get(ids.episodeA1).source_text, '源'.repeat(12001));
+    assert.equal(db.prepare('SELECT description FROM episodes WHERE id = ?').get(ids.episodeA1).description, '甲集说明');
+    assert.equal(executeGetCurrentProject(db, ids.dramaA, ids.episodeA1).project.episodesRevision, 1);
+    const stale = executeSaveEpisodeScript(db, ids.dramaA, ids.episodeA1, { scriptContent: '过期剧本', expectedRevision: 1 });
+    assert.equal(stale.ok, false);
+    const unversioned = executeSaveEpisodeScript(db, ids.dramaA, ids.episodeA1, { scriptContent: '无版本剧本' });
+    assert.equal(unversioned.ok, false);
     assert.equal(db.prepare('SELECT script_content FROM episodes WHERE id = ?').get(ids.episodeA1).script_content, '新剧本');
     assert.equal(db.prepare('SELECT deleted_at FROM episodes WHERE id = ?').get(ids.episodeA2).deleted_at, null);
     assert.equal(db.prepare('SELECT script_content FROM episodes WHERE id = ?').get(ids.episodeB1).script_content, '乙集剧本');
 
     db.prepare('INSERT INTO dramas (id, title) VALUES (3, \'空剧\')').run();
-    const created = executeSaveEpisodeScript(db, 3, null, { scriptContent: '第一集正文', title: '开场' });
+    const created = executeSaveEpisodeScript(db, 3, null, { scriptContent: '第一集正文', title: '开场', sourceText: '原始素材', description: '改编要求' });
     assert.equal(created.ok, true);
-    const row = db.prepare('SELECT episode_number, script_content, title FROM episodes WHERE drama_id = 3').get();
+    const row = db.prepare('SELECT episode_number, script_content, title, source_text, description FROM episodes WHERE drama_id = 3').get();
     assert.equal(row.episode_number, 1);
     assert.equal(row.script_content, '第一集正文');
     assert.equal(row.title, '开场');
+    assert.equal(row.source_text, '原始素材');
+    assert.equal(row.description, '改编要求');
+    const cleared = executeSaveEpisodeScript(db, 3, created.id, { scriptContent: '第二版正文', sourceText: '', expectedRevision: 1 });
+    assert.equal(cleared.ok, true);
+    const edited = db.prepare('SELECT source_text, description FROM episodes WHERE id = ?').get(created.id);
+    assert.deepEqual(edited, { source_text: '', description: '改编要求' });
   });
 
   it('edits characters, scenes, and shots without touching other dramas', async () => {
@@ -92,6 +112,7 @@ describe('agent tools', () => {
     const calls = [];
     const deps = {
       startStoryGeneration(d, l, body) { calls.push(['story', body]); return 'task-new'; },
+      startEpisodeStoryGeneration(d, l, dramaId, episodeId, body) { calls.push(['episode-story', dramaId, episodeId, body]); return 'task-single'; },
       generateCharacters() { calls.push(['characters']); return 'task-chars'; },
       extractBackgroundsForEpisode() { calls.push(['scenes']); return 'task-scenes'; },
       generateStoryboard(...args) { calls.push(['boards', args]); return { task_id: 'task-boards' }; },
@@ -106,6 +127,15 @@ describe('agent tools', () => {
     assert.equal(story.taskId, 'task-new');
     assert.equal(calls[0][1].drama_id, ids.dramaA);
     assert.equal(calls.filter((c) => c[0] === 'story').length, 1);
+    for (const premise of [undefined, '']) {
+      const single = tools.executeGenerateEpisodeStory(db, log, ids.dramaA, ids.episodeA1, { expectedRevision: 1, premise }, deps);
+      assert.equal(single.taskId, 'task-single');
+      const call = calls.filter((c) => c[0] === 'episode-story').at(-1);
+      assert.equal(call[1], ids.dramaA);
+      assert.equal(call[2], ids.episodeA1);
+      assert.equal(call[3].expected_revision, 1);
+      assert.equal(call[3].premise, premise);
+    }
 
     const boards = tools.executeGenerateStoryboards(db, log, ids.dramaA, ids.episodeA1, {}, deps);
     const boardArgs = calls.find((c) => c[0] === 'boards')[1];

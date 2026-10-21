@@ -105,13 +105,52 @@ function saveCharacters(db, log) {
   };
 }
 
+function episodeError(res, log, err) {
+  if (err.statusCode && err.statusCode < 500) return response.error(res, err.statusCode, err.code || 'BAD_REQUEST', err.message, err.details);
+  log.error('Episode operation failed', { error: err.message });
+  return response.internalError(res, err.message || '分集操作失败');
+}
+
+function createEpisode(db, log) {
+  return (req, res) => {
+    try {
+      response.created(res, dramaService.createEpisode(db, log, req.params.id, req.body || {}));
+    } catch (err) { episodeError(res, log, err); }
+  };
+}
+
+function updateEpisode(db, log) {
+  return (req, res) => {
+    try {
+      response.success(res, dramaService.updateEpisode(db, log, req.params.id, req.params.episodeId, req.body || {}));
+    } catch (err) { episodeError(res, log, err); }
+  };
+}
+
+function deleteEpisode(db, log) {
+  return (req, res) => {
+    try {
+      response.success(res, dramaService.deleteEpisode(db, log, req.params.id, req.params.episodeId, req.body || {}));
+    } catch (err) { episodeError(res, log, err); }
+  };
+}
+
+function generateEpisodeStory(db, log) {
+  return (req, res) => {
+    try {
+      const storyGenerationService = require('../services/storyGenerationService');
+      // Route scope always wins over any model/client supplied target IDs.
+      const taskId = storyGenerationService.startEpisodeStoryGeneration(db, log, req.params.id, req.params.episodeId, req.body || {});
+      response.success(res, { task_id: taskId, status: 'pending' });
+    } catch (err) { episodeError(res, log, err); }
+  };
+}
+
 function saveEpisodes(db, log) {
   return (req, res) => {
-    const body = req.body || {};
-    if (!Array.isArray(body.episodes)) return response.badRequest(res, 'episodes 必填且为数组');
-    const ok = dramaService.saveEpisodes(db, log, req.params.id, body);
-    if (!ok) return response.notFound(res, '剧本不存在');
-    response.success(res, { message: '保存成功' });
+    try {
+      response.success(res, dramaService.saveEpisodes(db, log, req.params.id, req.body || {}));
+    } catch (err) { episodeError(res, log, err); }
   };
 }
 
@@ -193,6 +232,7 @@ function importDrama(db, cfg, log) {
       response.created(res, result);
     } catch (err) {
       log.error('Import drama failed', { error: err.message });
+      if (err.statusCode && err.statusCode < 500) return response.error(res, err.statusCode, err.code || 'BAD_REQUEST', err.message, err.details);
       if (err.message && (err.message.includes('格式') || err.message.includes('缺少') || err.message.includes('损坏'))) {
         return response.badRequest(res, err.message);
       }
@@ -250,6 +290,7 @@ function importExample(db, cfg, log) {
       response.created(res, result);
     } catch (err) {
       log.error('Import example failed', { error: err.message });
+      if (err.statusCode && err.statusCode < 500) return response.error(res, err.statusCode, err.code || 'BAD_REQUEST', err.message, err.details);
       response.internalError(res, err.message || '导入示例失败');
     }
   };
@@ -291,6 +332,10 @@ module.exports = function dramaRoutes(db, cfg, log) {
     getCharacters: getCharacters(db),
     saveCharacters: saveCharacters(db, log),
     saveEpisodes: saveEpisodes(db, log),
+    createEpisode: createEpisode(db, log),
+    updateEpisode: updateEpisode(db, log),
+    deleteEpisode: deleteEpisode(db, log),
+    generateEpisodeStory: generateEpisodeStory(db, log),
     saveProgress: saveProgress(db, log),
     saveCanvasLayout: saveCanvasLayout(db, log),
     listProps: listProps(db),

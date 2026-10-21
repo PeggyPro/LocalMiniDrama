@@ -217,6 +217,7 @@ function exportDrama(db, cfg, log, dramaId) {
       return {
         episode_number: ep.episode_number,
         title: ep.title,
+        source_text: ep.source_text ?? null,
         description: ep.description,
         script_content: ep.script_content,
         duration: ep.duration,

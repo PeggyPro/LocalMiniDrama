@@ -1,6 +1,7 @@
 // No Vue/browser dependencies: drafts can be merged and restored in Node tests too.
 export const EPISODE_DRAFT_STORAGE_KEY = 'local-mini-drama:episode-drafts:v1'
-export const EPISODE_DRAFT_FIELDS = ['title', 'description', 'scriptContent']
+export const EPISODE_DRAFT_FIELDS = ['title', 'sourceText', 'description', 'scriptContent']
+const LEGACY_DRAFT_FIELDS = ['title', 'description', 'scriptContent']
 
 export function episodeDraftKey(dramaId, episodeId) {
   if (dramaId == null || episodeId == null || dramaId === '' || episodeId === '') return null
@@ -15,6 +16,7 @@ function revision(value) {
 function fields(value = {}) {
   return {
     title: String(value.title ?? ''),
+    sourceText: String(value.sourceText ?? value.source_text ?? ''),
     description: String(value.description ?? ''),
     scriptContent: String(value.scriptContent ?? value.script_content ?? ''),
   }
@@ -33,7 +35,22 @@ export function createEpisodeDraft(episode = {}) {
     remoteConflict: false,
     remoteRevision: null,
     baseSnapshot: base,
+    sourceTextNeedsHydration: false,
   }
+}
+
+/** Legacy v1 drafts never observed source_text; their empty placeholder must not erase it. */
+function hydrateLegacySource(draft, episode) {
+  if (!draft.sourceTextNeedsHydration || (!Object.hasOwn(episode, 'source_text') && !Object.hasOwn(episode, 'sourceText'))) return draft
+  const sourceText = fields(episode).sourceText
+  const next = {
+    ...draft,
+    sourceText: draft.sourceText === draft.baseSnapshot.sourceText ? sourceText : draft.sourceText,
+    baseSnapshot: { ...draft.baseSnapshot, sourceText },
+    sourceTextNeedsHydration: false,
+  }
+  next.dirty = !sameFields(next, next.baseSnapshot)
+  return next
 }
 
 export function editEpisodeDraft(draft, patch) {
@@ -51,6 +68,7 @@ export function mergeEpisodeDraft(draft, episode) {
   const incoming = createEpisodeDraft(episode)
   if (incoming.baseRevision < draft.baseRevision) return draft
   if (draft.remoteRevision != null && incoming.baseRevision < draft.remoteRevision) return draft
+  draft = hydrateLegacySource(draft, episode)
   if (!draft.dirty) return incoming
   if (incoming.baseRevision === draft.baseRevision) return draft
   return { ...draft, remoteConflict: true, remoteRevision: incoming.baseRevision }
@@ -61,7 +79,7 @@ export function resolveEpisodeDraftConflict(draft, episode, choice) {
   const server = createEpisodeDraft(episode)
   if (server.baseRevision < (draft?.remoteRevision ?? draft?.baseRevision ?? 0)) return draft
   if (choice === 'server' || !draft) return server
-  const next = { ...server, ...fields(draft) }
+  const next = { ...server, ...fields(hydrateLegacySource(draft, episode)) }
   next.dirty = !sameFields(next, next.baseSnapshot)
   return next
 }
@@ -83,6 +101,7 @@ export function acknowledgeEpisodeDraft(draft, episode, submittedSnapshot) {
   }
   next.baseSnapshot = saved.baseSnapshot
   next.baseRevision = saved.baseRevision
+  next.sourceTextNeedsHydration = false
   next.remoteConflict = draft.remoteRevision != null && draft.remoteRevision > saved.baseRevision
   next.remoteRevision = next.remoteConflict ? draft.remoteRevision : null
   next.dirty = !sameFields(next, next.baseSnapshot)
@@ -105,14 +124,20 @@ export function loadEpisodeDrafts(storage = browserDraftStorage()) {
     const result = {}
     for (const [key, value] of Object.entries(parsed.drafts)) {
       if (!/^[^:]+:[^:]+$/.test(key) || !value || typeof value !== 'object' || Array.isArray(value)) continue
-      if (!EPISODE_DRAFT_FIELDS.every((field) => typeof value[field] === 'string')) continue
-      if (!value.baseSnapshot || !EPISODE_DRAFT_FIELDS.every((field) => typeof value.baseSnapshot[field] === 'string')) continue
+      if (!LEGACY_DRAFT_FIELDS.every((field) => typeof value[field] === 'string')) continue
+      if (!value.baseSnapshot || !LEGACY_DRAFT_FIELDS.every((field) => typeof value.baseSnapshot[field] === 'string')) continue
+      // Keep the v1 storage key and all unsaved fields. Missing source is an upgrade,
+      // not a malformed record or a user edit; validate present source fields normally.
+      const hasSource = Object.hasOwn(value, 'sourceText')
+      const hasBaseSource = Object.hasOwn(value.baseSnapshot, 'sourceText')
+      if ((hasSource && typeof value.sourceText !== 'string') || (hasBaseSource && typeof value.baseSnapshot.sourceText !== 'string')) continue
       const draft = {
         ...fields(value),
         baseSnapshot: fields(value.baseSnapshot),
         baseRevision: revision(value.baseRevision),
         remoteConflict: value.remoteConflict === true,
         remoteRevision: value.remoteRevision == null ? null : revision(value.remoteRevision),
+        sourceTextNeedsHydration: value.sourceTextNeedsHydration === true || !hasSource || !hasBaseSource,
       }
       draft.dirty = !sameFields(draft, draft.baseSnapshot)
       result[key] = draft

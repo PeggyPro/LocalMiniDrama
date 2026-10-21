@@ -14,7 +14,6 @@
           v-model="selectedEpisodeId"
           class="header-episode-select"
           placeholder="选择集数"
-          clearable
           size="small"
           style="width: 130px"
           @change="onEpisodeSelect"
@@ -198,15 +197,37 @@
           <el-tab-pane label="创作剧本" name="create">
             <div class="script-pane-inner">
               <div class="script-sub-block">
-                <h2 class="section-title">故事生成</h2>
-                <p class="section-desc">输入一段故事梗概，AI 帮你扩写成完整剧本，或直接导入小说章节</p>
+                <h2 class="section-title">{{ currentEpisode ? '第' + currentEpisode.episode_number + '集创作' : '本集创作' }}</h2>
+                <p class="section-desc">本集原文、改编要求和剧本分别保存。先导入或粘贴原文，再生成下方剧本。角色与画面风格可沿用全剧设定。</p>
+                <template v-if="!dramaId">
+                  <el-input v-model="newProjectTitle" placeholder="全剧名称（与本集标题独立）" style="margin-bottom: 10px" />
+                  <el-input v-model="newProjectBackground" type="textarea" :rows="2" placeholder="全剧背景（可选，各集共享）" style="margin-bottom: 10px" />
+                </template>
+                <details v-else-if="store.drama?.description" style="margin-bottom: 12px">
+                  <summary>全剧背景（各集共享）</summary>
+                  <el-input :model-value="store.drama.description" type="textarea" :rows="3" readonly style="margin-top: 8px" />
+                  <span class="section-desc">在剧集信息中编辑全剧背景。</span>
+                </details>
+                <h3 class="preview-block-title">本集原文</h3>
+                <p class="section-desc">小说或原始素材保存在这里，生成剧本时不会改动原文。</p>
+                <el-input
+                  v-model="sourceText"
+                  type="textarea"
+                  :rows="8"
+                  placeholder="粘贴这一集对应的小说正文，或点击「导入小说原文」。"
+                  aria-label="本集原文"
+                  class="story-textarea"
+                />
+                <h3 class="preview-block-title" style="margin-top: 14px">改编要求（选填）</h3>
                 <el-input
                   v-model="storyInput"
                   type="textarea"
-                  :rows="4"
-                  placeholder="例如：一个少女在森林里遇见会说话的狐狸，一起寻找失落的宝石..."
+                  :rows="3"
+                  placeholder="例如：保留主要对白，压缩心理描写，结尾留悬念。也可以只填故事梗概直接创作。"
+                  aria-label="改编要求（选填）"
                   class="story-textarea"
                 />
+                <p v-if="!sourceText.trim() && storyInput.trim()" class="section-desc">本栏也支持直接填写故事梗概。如果粘贴的是小说原文，建议放到上方「本集原文」。</p>
                 <div class="row gap" style="margin-top: 10px; flex-wrap: wrap;">
                   <el-select v-model="storyStyle" placeholder="故事风格" clearable style="width: 120px" @change="() => saveProjectSettings(false)">
                     <el-option label="现代" value="modern" />
@@ -219,82 +240,77 @@
                     <el-option label="喜剧" value="comedy" />
                     <el-option label="冒险" value="adventure" />
                   </el-select>
-                  <div style="display:flex;align-items:center;gap:6px;font-size:13px">
-                    <span>集数</span>
-                    <el-input-number
-                      v-model="storyEpisodeCount"
-                      :min="1"
-                      :step="1"
-                      :precision="0"
-                      controls-position="right"
-                      style="width: 100px"
-                    />
-                  </div>
-                  <el-button type="primary" :loading="isStoryGenRunning" @click="onGenerateStory">
-                    生成剧本
+                  <el-checkbox v-model="referencePrevious" :disabled="!currentEpisode || currentEpisode.episode_number <= 1">参考前集剧情</el-checkbox>
+                  <el-button type="primary" :loading="isStoryGenRunning" :disabled="!!dramaId && !currentEpisodeId" @click="onGenerateStory">
+                    {{ scriptContent.trim() ? '重新生成本集剧本' : '生成本集剧本' }}
                   </el-button>
                   <el-button plain @click="showNovelImport = true">
                     <el-icon><DocumentAdd /></el-icon>
-                    导入小说
+                    导入小说原文
                   </el-button>
                 </div>
               </div>
               <div class="script-sub-divider" />
               <div id="anchor-script" class="script-sub-block">
                 <div class="model-section-heading">
-                  <h2 class="section-title">剧本</h2>
+                  <h2 class="section-title">本集剧本 <small v-if="episodeDraft?.dirty" style="font-size: 12px; color: var(--el-color-warning)">未保存草稿</small></h2>
                   <AIModelInfoCard scene-key="story_generation" usage="剧本生成" :refresh-key="modelInfoRevision" @open-config="showAiConfigDialog = true" />
                 </div>
                 <div class="row gap" style="margin-bottom: 10px; flex-wrap: wrap;">
-                  <el-select
-                    v-model="selectedEpisodeId"
-                    placeholder="选择集数"
-                    clearable
-                    style="width: 130px"
-                    :disabled="!dramaId"
-                    @change="onEpisodeSelect"
-                  >
-                    <el-option
-                      v-for="ep in (store.drama?.episodes || [])"
-                      :key="ep.id"
-                      :label="ep.title || '第' + (ep.episode_number || 0) + '集'"
-                      :value="ep.id"
-                    />
-                  </el-select>
-                  <el-input v-model="scriptTitle" placeholder="集标题" style="width: 150px" />
-                  <el-button v-if="dramaId" style="margin-left: auto" @click="onAddEpisode">
-                    <el-icon><Plus /></el-icon>添加一集
-                  </el-button>
+                  <span>集标题</span>
+                  <el-input v-model="scriptTitle" aria-label="集标题" placeholder="自己填写，AI 不会修改" style="width: 230px" />
+                  <el-button
+                    type="primary"
+                    :loading="scriptGenerating"
+                    :disabled="episodeSubmitBusy || (!!dramaId && (store.drama?.episodes?.length > 0) && !currentEpisodeId)"
+                    title="保存本集标题、原文、改编要求和剧本"
+                    @click="onGenerateScript"
+                  >保存当前集</el-button>
                 </div>
+                <p class="section-desc">AI 改编后的剧本显示在这里，与上方原文分别保存。可直接编辑；「保存当前集」会同时保存原文、改编要求、标题和剧本。</p>
                 <el-input
                   v-model="scriptContent"
                   type="textarea"
-                  :rows="8"
-                  placeholder="剧本内容将显示在这里，可直接编辑..."
+                  :rows="12"
+                  placeholder="本集剧本 / AI 改编结果。也可以直接粘贴已有剧本。"
+                  aria-label="本集剧本"
                   class="story-textarea"
                 />
-                <div class="row gap" style="margin-top: 8px; flex-wrap: wrap;">
-                  <el-button
-                    :loading="scriptGenerating"
-                    :disabled="!!dramaId && (store.drama?.episodes?.length > 0) && !currentEpisodeId"
-                    @click="onGenerateScript"
-                  >
-                    保存当前集
-                  </el-button>
+                <el-alert v-if="episodeDraft?.remoteConflict" type="warning" :closable="false" show-icon style="margin-top: 8px">
+                  本集在服务器上有更新，已保留你的草稿。请核对原文、改编要求和剧本的最新版本后再决定采用哪一份。
+                  <el-button link type="primary" @click="showServerScript = !showServerScript">{{ showServerScript ? '收起服务器版本' : '查看服务器版本' }}</el-button>
+                  <el-button link type="primary" @click="adoptLocalDraft">保留草稿并保存</el-button>
+                  <el-button link type="warning" @click="useServerDraft">采用服务器版本</el-button>
+                </el-alert>
+                <div v-if="showServerScript && episodeDraft?.remoteConflict" style="margin-top: 8px">
+                  <p class="section-desc">服务器版本 · 本集原文</p>
+                  <el-input :model-value="currentEpisode?.source_text || ''" type="textarea" :rows="4" readonly />
+                  <p class="section-desc">服务器版本 · 改编要求</p>
+                  <el-input :model-value="currentEpisode?.description || ''" type="textarea" :rows="2" readonly />
+                  <p class="section-desc">服务器版本 · 本集剧本</p>
+                  <el-input :model-value="currentEpisode?.script_content || ''" type="textarea" :rows="6" readonly />
+                </div>
+                <el-alert v-if="scriptNeedsReview" type="info" :closable="false" show-icon style="margin-top: 8px">剧本已更新，已有分镜和素材会保留，请检查是否需要重新生成。</el-alert>
+                <div v-if="generationCandidate" style="margin-top: 12px">
+                  <p>生成期间本集已被修改，生成结果已保留为候选，未覆盖当前剧本。</p>
+                  <el-input :model-value="generationCandidate.script_content || ''" type="textarea" :rows="6" readonly />
+                  <el-button style="margin-top: 8px" @click="adoptGenerationCandidate">采用候选到本集草稿</el-button>
                 </div>
               </div>
             </div>
           </el-tab-pane>
           <el-tab-pane label="选择剧本" name="select">
             <p class="section-desc script-mode-hint">
-              从剧本库选择后，仅把「故事梗概」与「各集剧本正文」写入当前工程，不会导入角色、分镜、图片或视频。
+              从剧本库追加或明确替换分集文字；原文、改编要求和剧本分别保留。操作前会显示影响范围，不包含角色、分镜或媒体。
             </p>
             <el-button type="primary" @click="openSelectScriptDialog">
               <el-icon><Document /></el-icon>
               从已有剧本中选择…
             </el-button>
             <div v-if="dramaId && (store.drama?.episodes?.length || storyInput)" class="script-preview-wrap">
-              <h3 class="preview-block-title">故事梗概</h3>
+              <h3 class="preview-block-title">本集原文</h3>
+              <el-input :model-value="sourceText" type="textarea" :rows="4" readonly class="story-textarea" />
+              <h3 class="preview-block-title">改编要求（选填）</h3>
               <el-input
                 :model-value="storyInput"
                 type="textarea"
@@ -322,7 +338,7 @@
                 </el-tabs>
               </template>
               <template v-else>
-                <h3 class="preview-block-title">剧本正文</h3>
+                <h3 class="preview-block-title">本集剧本</h3>
                 <el-input
                   :model-value="scriptContent"
                   type="textarea"
@@ -347,6 +363,10 @@
         destroy-on-close
         @open="loadSelectScriptList"
       >
+        <el-radio-group v-model="scriptImportMode" :disabled="selectScriptImporting" style="margin-bottom: 12px">
+          <el-radio value="append">追加新分集</el-radio>
+          <el-radio value="replace">替换全剧分集</el-radio>
+        </el-radio-group>
         <div v-loading="selectScriptLoading || selectScriptImporting" class="select-script-list">
           <div
             v-for="d in selectableScriptDramas"
@@ -2580,16 +2600,21 @@
     </el-dialog>
 
     <!-- P1-2: 导入小说弹窗 -->
-    <el-dialog v-model="showNovelImport" title="导入小说/长文" width="600px" @close="novelImportReset">
+    <el-dialog v-model="showNovelImport" title="导入小说/长文" width="680px" :close-on-click-modal="!novelImporting" :close-on-press-escape="!novelImporting" :show-close="!novelImporting" @close="novelImportReset">
       <div class="novel-import-dialog">
-        <p style="color:#6b7280;font-size:13px;margin-bottom:12px">支持粘贴小说文本或上传 txt 文件，AI 自动识别章节并转换为剧本集数</p>
+        <p style="color:#6b7280;font-size:13px;margin-bottom:12px">先预览章节，再确认导入范围。小说放入「本集原文」，不会替换已有剧本。追加分集后，可逐集生成剧本。</p>
+        <el-radio-group v-model="novelDestination" :disabled="novelImporting" style="margin-bottom: 12px">
+          <el-radio value="current">放入本集原文草稿</el-radio>
+          <el-radio value="append">追加新分集</el-radio>
+          <el-radio value="replace">替换全剧分集</el-radio>
+        </el-radio-group>
         <el-tabs v-model="novelImportMode">
           <el-tab-pane label="粘贴文本" name="text">
             <el-input
               v-model="novelText"
               type="textarea"
               :rows="10"
-              placeholder="粘贴小说正文，AI 会自动识别章节..."
+              placeholder="粘贴小说原文，按章节标题识别，不会调用 AI 改写..."
             />
           </el-tab-pane>
           <el-tab-pane label="上传文件" name="file">
@@ -2606,17 +2631,22 @@
             <div v-if="novelFileName" style="margin-top:8px;font-size:13px;color:#409eff">已选择：{{ novelFileName }}</div>
           </el-tab-pane>
         </el-tabs>
-        <div class="novel-import-options" style="margin-top:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <p v-if="novelDestination === 'current'" class="section-desc">本集模式会完整导入全部文字，不按章节数量截断。</p>
+        <div v-else class="novel-import-options" style="margin-top:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
           <div style="display:flex;align-items:center;gap:6px;font-size:13px">
             <span>最多导入集数：</span>
             <el-input-number v-model="novelMaxChapters" :min="1" :max="20" size="small" style="width:100px" />
           </div>
-          <el-checkbox v-model="novelAiSummarize" size="small">AI 转换为剧本格式（会消耗 Token）</el-checkbox>
+        </div>
+        <div v-if="novelPreview.length" style="margin-top: 12px">
+          <p>预览 {{ novelPreview.length }} 个章节；{{ novelDestination === 'current' ? '完整放入本集原文草稿' : novelDestination === 'append' ? '追加为新分集' : '替换全剧分集列表' }}。</p>
+          <ol style="max-height: 150px; overflow: auto"><li v-for="(chapter, index) in novelPreview" :key="index">{{ chapter.title || '未命名章节' }}（{{ chapter.source_text.length }} 字）</li></ol>
+          <el-input :model-value="novelPreview[0].source_text" type="textarea" :rows="4" readonly />
         </div>
       </div>
       <template #footer>
-        <el-button @click="showNovelImport = false">取消</el-button>
-        <el-button type="primary" :loading="novelImporting" @click="onImportNovel">开始导入</el-button>
+        <el-button :disabled="novelImporting" @click="showNovelImport = false">取消</el-button>
+        <el-button type="primary" :loading="novelImporting" @click="onImportNovel">{{ novelPreview.length ? '确认导入' : '预览章节' }}</el-button>
       </template>
     </el-dialog>
 
@@ -2672,7 +2702,8 @@ import { characterLibraryAPI } from '@/api/characterLibrary'
 import { sceneLibraryAPI } from '@/api/sceneLibrary'
 import { propLibraryAPI } from '@/api/propLibrary'
 import { generationSettingsAPI } from '@/api/prompts'
-import { parseScriptIntoEpisodes, episodesListToPlainScript } from '@/utils/scriptEpisodes'
+import { prepareEpisodeImport, captureEpisodeScope } from '@/utils/episodeOperations'
+import { mergeImportedEpisodeRows } from '@/utils/episodeBatchImport'
 import { canUseUniversalOmniVideoApi } from '@/utils/videoOmniSupport'
 import { getMissingStoryboardImageSlots, generateMissingStoryboardImages } from '@/utils/storyboardImageGeneration'
 import { exportStoryboardSheet } from '@/utils/exportStoryboardSheet'
@@ -2727,14 +2758,60 @@ watch(showAiConfigDialog, (open) => {
     loadPipelineConcurrency()
   }
 })
-const storyInput = ref('')
+const newProjectTitle = ref('')
+const newProjectBackground = ref('')
+const newEpisodeSource = ref('')
+const newEpisodePremise = ref('')
+const newEpisodeTitle = ref('')
+const newEpisodeScript = ref('')
+const episodeDraft = computed(() => store.currentEpisodeDraft)
+const sourceText = computed({
+  get: () => episodeDraft.value?.sourceText ?? newEpisodeSource.value,
+  set: (value) => {
+    if (store.currentEpisode) store.updateEpisodeDraft(store.dramaId, store.currentEpisode.id, { sourceText: value })
+    else newEpisodeSource.value = value
+  },
+})
+const storyInput = computed({
+  get: () => episodeDraft.value?.description ?? newEpisodePremise.value,
+  set: (value) => {
+    if (store.currentEpisode) store.updateEpisodeDraft(store.dramaId, store.currentEpisode.id, { description: value })
+    else newEpisodePremise.value = value
+  },
+})
+const referencePrevious = ref(false)
+const showServerScript = ref(false)
+const generationCandidates = reactive({})
+const dismissedCandidateTaskIds = new Set()
+const reviewEpisodeKeys = reactive(new Set())
+const episodeKey = computed(() => store.dramaId && store.currentEpisode?.id ? store.dramaId + ':' + store.currentEpisode.id : '')
+const generationCandidate = computed(() => generationCandidates[episodeKey.value] || null)
+const scriptNeedsReview = computed(() => reviewEpisodeKeys.has(episodeKey.value) && !!store.currentEpisode?.storyboards?.length)
+let pageActive = true
+let routeEpoch = 0
+let episodeEpoch = 0
+let loadRequest = 0
+const applyingRoute = ref(false)
+const operationScope = ref(null)
+function isProjectActive(did) {
+  return pageActive && Number(store.dramaId) === Number(did)
+    && (route.params.id === 'new' || Number(route.params.id) === Number(did))
+}
+function captureCurrentScope() {
+  return captureEpisodeScope(() => ({
+    active: pageActive, dramaId: store.dramaId, episodeId: store.currentEpisode?.id,
+    epoch: routeEpoch + ':' + episodeEpoch,
+  }))
+}
 const storyStyle = ref('')
 const storyType = ref('')
-const storyEpisodeCount = ref(1)
 const storyGenerating = ref(false)
+const episodeSubmitBusy = ref(false)
+const productionPreparing = ref(false)
 /** 剧本工作台：create 创作 | select 选择预览 */
 const scriptWorkbenchMode = ref('create')
 const showSelectScriptDialog = ref(false)
+const scriptImportMode = ref('append')
 const selectScriptLoading = ref(false)
 const selectScriptImporting = ref(false)
 const selectScriptDramas = ref([])
@@ -2753,20 +2830,28 @@ const novelText = ref('')
 const novelFileName = ref('')
 const novelFileContent = ref('')
 const novelMaxChapters = ref(10)
-const novelAiSummarize = ref(false)
 const novelImporting = ref(false)
-const scriptTitle = ref('')
+const novelDestination = ref('current')
+const novelPreview = ref([])
+const scriptTitle = computed({
+  get: () => episodeDraft.value?.title ?? newEpisodeTitle.value,
+  set: (value) => {
+    if (store.currentEpisode) store.updateEpisodeDraft(store.dramaId, store.currentEpisode.id, { title: value })
+    else newEpisodeTitle.value = value
+  },
+})
 const selectedEpisodeId = ref(null)
-/** 保存剧本后用于恢复选中集（后端重插后 id 会变，用 episode_number 匹配） */
+/** Fallback selection after explicit batch replacement only; normal writes retain episode IDs. */
 const savedCurrentEpisodeNumber = ref(1)
 const scriptLanguage = ref('zh')
 const scriptStoryboardStyle = ref('')
 const scriptGenerating = ref(false)
 const isStoryGenRunning = computed(() => {
-  if (storyGenerating.value || scriptGenerating.value) return true
-  return genStore.getAllRunningTasks().some(
-    (t) => Number(t.dramaId) === Number(dramaId.value) && t.resourceType === GEN_RESOURCE.GENERATE_STORY
-  )
+  const submittingHere = storyGenerating.value && operationScope.value === episodeKey.value
+  return episodeSubmitBusy.value || submittingHere || genStore.isRunning({
+    dramaId: store.dramaId, episodeId: store.currentEpisode?.id,
+    resourceType: GEN_RESOURCE.GENERATE_EPISODE_STORY, resourceId: store.currentEpisode?.id,
+  })
 })
 const generationStyle = ref('')
 const customStylePrompt = ref('')
@@ -2815,8 +2900,11 @@ function projectStylePromptMetadata() {
 }
 
 const scriptContent = computed({
-  get: () => store.scriptContent,
-  set: (v) => store.setScriptContent(v)
+  get: () => store.currentEpisode ? store.scriptContent : newEpisodeScript.value,
+  set: (v) => {
+    if (store.currentEpisode) store.setScriptContent(v)
+    else newEpisodeScript.value = v
+  }
 })
 const videoResolution = storeVideoResolution
 const videoMusic = ref('')
@@ -2871,6 +2959,19 @@ const pipelineStepIndex = ref(0)    // 当前步骤序号（1-based）
 /** 全流程 10 步；仅文本框架为前 4 步 */
 const pipelineStepTotal = ref(10)
 let pipelineResolveResume = null
+let pipelineScope = null
+const pipelineTaskIds = new Set()
+function assertPipelineScope() {
+  if (pipelineAbortRequested.value || !pageActive || (pipelineScope && !pipelineScope())) {
+    throw Object.assign(new Error('流程已停止：页面或当前集已改变'), { pipelineAborted: true })
+  }
+}
+async function pipelineRequest(request) {
+  await checkPause()
+  const result = await request()
+  assertPipelineScope()
+  return result
+}
 // 倒计时（两个生成阶段之间的确认窗口）
 const pipelineCountdown = ref(0)      // 剩余秒数，0 表示不在倒计时
 const pipelineCountdownMsg = ref('')  // 倒计时说明文字
@@ -2988,6 +3089,7 @@ const {
 } = useScenes({ store, dramaId, currentEpisodeId, getSelectedStyle, scriptLanguage, loadDrama, pollTask, pollUntilResourceHasImage, hasAssetImage, dramaAPI })
 
 async function onGenerateCharacters() {
+  if (!await prepareEpisodeProduction()) return
   trackFilmCreateAction('generate_characters_click')
   const beforeCount = (store.currentEpisode?.characters || []).length
   try {
@@ -3005,6 +3107,7 @@ async function onGenerateCharacters() {
 }
 
 async function onExtractProps() {
+  if (!await prepareEpisodeProduction()) return
   trackFilmCreateAction('extract_props_click')
   const beforeCount = (store.props || []).length
   try {
@@ -3022,6 +3125,7 @@ async function onExtractProps() {
 }
 
 async function onExtractScenes() {
+  if (!await prepareEpisodeProduction()) return
   trackFilmCreateAction('extract_scenes_click')
   const beforeCount = (store.currentEpisode?.scenes || []).length
   try {
@@ -3189,9 +3293,6 @@ const allActiveTaskItems = computed(() => {
       kind: 'pipeline',
     })
   }
-  if (isStoryGenRunning.value && !genStore.getAllRunningTasks().some((t) => t.resourceType === GEN_RESOURCE.GENERATE_STORY)) {
-    addItem({ id: 'story-gen-local', label: '生成剧本...', kind: 'storyGenLocal' })
-  }
   if (universalOmniPolishRunning.value) {
     const p = universalOmniPolishProgress.value
     addItem({
@@ -3228,20 +3329,10 @@ async function cancelActiveTask(item) {
     }
     if (item.kind === 'pipeline') {
       pipelineAbortRequested.value = true
-      pipelineRunning.value = false
       pipelinePaused.value = false
-      for (const t of genStore.getAllRunningTasks()) {
-        if (t.taskId) await genStore.cancelTask(t)
-      }
+      if (pipelineResolveResume) { pipelineResolveResume(); pipelineResolveResume = null }
+      for (const taskId of pipelineTaskIds) { await taskAPI.cancel(taskId).catch(() => {}) }
       ElMessage.success('已停止全流程')
-      return
-    }
-    if (item.kind === 'storyGenLocal') {
-      storyGenerating.value = false
-      scriptGenerating.value = false
-      const storyTask = genStore.getAllRunningTasks().find((t) => t.resourceType === GEN_RESOURCE.GENERATE_STORY)
-      if (storyTask) await genStore.cancelTask(storyTask)
-      ElMessage.success('已取消剧本生成')
       return
     }
     if (item.kind === 'universalOmniPolish') {
@@ -3920,6 +4011,7 @@ function getSbResumableFailedVideo(storyboardId) {
 }
 
 async function loadStoryboardMedia() {
+  const isActive = captureCurrentScope()
   const boards = store.storyboards || []
   if (boards.length === 0) {
     sbImages.value = {}
@@ -3943,6 +4035,7 @@ async function loadStoryboardMedia() {
       }
     })
   )
+  if (!isActive()) return
   sbImages.value = nextImages
   sbVideos.value = nextVideos
   // 从后端恢复主图选择
@@ -3993,13 +4086,20 @@ async function recoverAndSyncEpisodeTasks(epId) {
   const did = dramaId.value
   const eid = epId ?? currentEpisodeId.value
   if (!did || !eid) return
+  const isActive = captureCurrentScope()
   const ctx = buildEpisodeContext(store, did, eid)
   await genStore.recoverPendingForEpisode({
     ...ctx,
+    isActive,
     ElMessage,
     callbacks: {
       onStoryboardMedia: (sbId) => loadSingleStoryboardMedia(sbId),
       onDramaRefresh: () => loadDrama(),
+      onEpisodeStoryCandidate: ({ candidate, taskId, episodeId, dramaId }) => {
+        if (isActive() && !dismissedCandidateTaskIds.has(taskId)) {
+          generationCandidates[dramaId + ':' + episodeId] = { ...candidate, taskId }
+        }
+      },
       onEpisodeMergeComplete: () => {
         store.setVideoStatus('done', did, eid)
         store.setVideoProgress(100, did, eid)
@@ -4010,6 +4110,7 @@ async function recoverAndSyncEpisodeTasks(epId) {
       },
     },
   })
+  if (!isActive()) return
   syncGeneratingSetsFromStore(genStore, did, eid, getGeneratingSetsBag())
   const mergeRunning = genStore.getRunningForEpisode(did, eid).some(
     (t) => t.resourceType === GEN_RESOURCE.EPISODE_MERGE
@@ -4021,12 +4122,14 @@ async function recoverAndSyncEpisodeTasks(epId) {
 
 /** 只刷新单条分镜的图片/视频，避免每次单图操作都全量请求所有分镜 */
 async function loadSingleStoryboardMedia(sbId) {
-  if (!sbId) return
+  if (!sbId || !(store.storyboards || []).some((sb) => Number(sb.id) === Number(sbId))) return
+  const isActive = captureCurrentScope()
   try {
     const [imgRes, vidRes] = await Promise.all([
       imagesAPI.list({ storyboard_id: sbId, page: 1, page_size: 100 }),
       videosAPI.list({ storyboard_id: sbId, page: 1, page_size: 50 })
     ])
+    if (!isActive()) return
     sbImages.value = {
       ...sbImages.value,
       [sbId]: (imgRes && imgRes.items) ? imgRes.items : []
@@ -4270,23 +4373,30 @@ async function getCachedFramePromptFromDb(sbId, slot) {
  * 首尾帧模式：优先走 framePromptService（专用系统提示词 + 文本 AI），失败则回退字段拼接。
  */
 async function ensureProfessionalFramePrompt(sb, slot, { forceRegenerate = false } = {}) {
+  const isActive = captureCurrentScope()
+  const assertActive = () => { if (!isActive()) throw Object.assign(new Error('当前集已改变，停止提交后续生成'), { pipelineAborted: true }) }
   const frameType = slot === 'last' ? 'last' : 'first'
   if (!forceRegenerate) {
     const cached = await getCachedFramePromptFromDb(sb.id, slot)
+    assertActive()
     if (cached) return cached
   }
   try {
+    assertActive()
     const genRes = await storyboardsAPI.generateFramePrompt(sb.id, { frame_type: frameType })
     if (!genRes?.task_id) throw new Error('帧提示词任务未创建')
     const pollRes = await pollTask(genRes.task_id)
+    assertActive()
     if (pollRes?.status !== 'completed') {
       throw new Error(pollRes?.error || '帧提示词生成失败')
     }
     const fromTask = pollRes.result?.response?.single_frame?.prompt
     if (fromTask && String(fromTask).trim()) return String(fromTask).trim()
     const cached2 = await getCachedFramePromptFromDb(sb.id, slot)
+    assertActive()
     if (cached2) return cached2
   } catch (e) {
+    if (e?.pipelineAborted) throw e
     console.warn('[首尾帧] 专业帧提示词生成失败，使用拼接回退', e?.message)
   }
   return slot === 'last' ? buildLastFrameImagePrompt(sb.id) : buildFirstFrameImagePrompt(sb.id)
@@ -4360,6 +4470,9 @@ async function generateMissingSbImages(sb, {
   beforeGenerate = async () => {},
   shouldStop = () => false,
 } = {}) {
+  const isActive = captureCurrentScope()
+  const requestedStop = shouldStop
+  shouldStop = () => !isActive() || requestedStop()
   if (isSbImageGenerating(sb.id)) return { status: 'skipped' }
   const useFirstLastFrame = getSbImageGenerationState(sb).useFirstLastFrame
   const layoutLock = !!lastFrameUseFirstLayoutLock.value
@@ -4418,6 +4531,7 @@ async function generateMissingSbImages(sb, {
           await loadSingleStoryboardMedia(sb.id)
           genStore.markDone(meta)
         }
+        if (shouldStop()) return { status: 'stopped' }
         if (slot === 'last') delete sbSelectedLastImgId.value[sb.id]
         if (slot === 'first') delete sbSelectedImgId.value[sb.id]
         return { status: 'completed' }
@@ -4744,72 +4858,56 @@ function syncStoryboardStateFromEpisode(ep) {
 }
 
 function onEpisodeSelect(epId) {
-  if (epId == null) {
-    store.setCurrentEpisode(null)
-    store.setScriptContent('')
-    scriptTitle.value = ''
-    syncStoryboardStateFromEpisode(null)
-    return
+  const ep = (store.drama?.episodes || []).find((e) => Number(e.id) === Number(epId)) || null
+  if (Number(store.currentEpisode?.id || 0) !== Number(ep?.id || 0)) {
+    episodeEpoch++
+    showServerScript.value = false
+    referencePrevious.value = false
+    if (pipelineRunning.value) {
+      pipelineAbortRequested.value = true
+      pipelinePaused.value = false
+      if (pipelineResolveResume) { pipelineResolveResume(); pipelineResolveResume = null }
+    }
   }
-  const list = store.drama?.episodes || []
-  const ep = list.find((e) => Number(e.id) === Number(epId))
-  if (!ep) return
+  selectedEpisodeId.value = ep?.id ?? null
   store.setCurrentEpisode(ep)
-  store.setScriptContent(ep.script_content || '')
-  scriptTitle.value = ep.title || '第' + (ep.episode_number || 0) + '集'
   syncStoryboardStateFromEpisode(ep)
-  loadStoryboardMedia()
-  recoverAndSyncEpisodeTasks(epId)
+  if (ep) {
+    loadStoryboardMedia()
+    recoverAndSyncEpisodeTasks(ep.id)
+  }
 }
 
 async function loadDrama() {
-  if (!store.dramaId) return
+  const did = store.dramaId
+  if (!did || !isProjectActive(did)) return
+  const request = ++loadRequest
+  const epoch = routeEpoch
+  const isActive = () => isProjectActive(did) && epoch === routeEpoch && request === loadRequest
   try {
-    let d = await dramaAPI.get(store.dramaId)
-    d = await backfillDramaStylePromptMetadataIfNeeded(dramaAPI, store.dramaId, d)
+    let d = await dramaAPI.get(did)
+    if (!isActive()) return
+    d = await backfillDramaStylePromptMetadataIfNeeded(dramaAPI, did, d)
+    if (!isActive()) return
     store.setDrama(d)
-    // 恢复「故事生成」框的梗概（项目 description 存的是故事梗概）
-    storyInput.value = (d.description || '').toString().trim()
-    storyStyle.value = (d.metadata && d.metadata.story_style) ? d.metadata.story_style : ''
+    storyStyle.value = d.metadata?.story_style || ''
     storyType.value = d.genre || ''
     generationStyle.value = d.style || ''
-    if ((d.style || '') === CUSTOM_STYLE_VALUE) {
-      customStylePrompt.value = (d.metadata?.style_prompt_zh || d.metadata?.style_prompt_en || '').toString()
-    } else {
-      customStylePrompt.value = ''
-    }
-    projectAspectRatio.value = (d.metadata && d.metadata.aspect_ratio) ? d.metadata.aspect_ratio : '16:9'
-    videoClipDuration.value = (d.metadata && d.metadata.video_clip_duration) ? Number(d.metadata.video_clip_duration) : 5
-    storyboardIncludeNarration.value = !!(d.metadata && d.metadata.storyboard_include_narration)
-    storyboardUniversalOmni.value = !!(d.metadata && d.metadata.storyboard_universal_omni)
-    storyboardUseFirstLastFrame.value = !!(d.metadata && d.metadata.storyboard_use_first_last_frame)
+    customStylePrompt.value = d.style === CUSTOM_STYLE_VALUE
+      ? String(d.metadata?.style_prompt_zh || d.metadata?.style_prompt_en || '') : ''
+    projectAspectRatio.value = d.metadata?.aspect_ratio || '16:9'
+    videoClipDuration.value = Number(d.metadata?.video_clip_duration) || 5
+    storyboardIncludeNarration.value = !!d.metadata?.storyboard_include_narration
+    storyboardUniversalOmni.value = !!d.metadata?.storyboard_universal_omni
+    storyboardUseFirstLastFrame.value = !!d.metadata?.storyboard_use_first_last_frame
     lastFrameUseFirstLayoutLock.value = d.metadata?.last_frame_use_first_layout_lock !== false
-    if (storyboardUseFirstLastFrame.value && gridMode.value !== 'single') {
-      gridMode.value = 'single'
-    }
+    if (storyboardUseFirstLastFrame.value && gridMode.value !== 'single') gridMode.value = 'single'
     const list = d.episodes || []
-    // 优先保持当前选中的集（按 id 在最新列表中查找），避免 AI 生成角色等操作后误切到其他集
-    const currentId = selectedEpisodeId.value
-    let ep = currentId != null ? list.find((e) => Number(e.id) === Number(currentId)) : null
-    if (!ep) {
-      const wantNum = savedCurrentEpisodeNumber.value
-      ep = list.find((e) => Number(e.episode_number) === Number(wantNum)) || list[0] || null
-    }
-    store.setCurrentEpisode(ep)
-    if (ep) {
-      store.setScriptContent(ep.script_content || '')
-      scriptTitle.value = ep.title || '第' + (ep.episode_number || 0) + '集'
-      selectedEpisodeId.value = ep.id
-    } else {
-      store.setScriptContent('')
-      scriptTitle.value = ''
-      selectedEpisodeId.value = null
-    }
-    syncStoryboardStateFromEpisode(ep)
-    await loadStoryboardMedia()
-    await recoverAndSyncEpisodeTasks(ep?.id)
-  } catch (e) {
-    ElMessage.error(e.message || '加载失败')
+    const ep = list.find((e) => Number(e.id) === Number(selectedEpisodeId.value))
+      || list.find((e) => Number(e.episode_number) === Number(savedCurrentEpisodeNumber.value)) || list[0] || null
+    onEpisodeSelect(ep?.id)
+  } catch (error) {
+    if (isActive()) ElMessage.error(error.message || '加载失败')
   }
 }
 
@@ -5058,114 +5156,109 @@ function updateStoryboardDialogue(sbId) {
   // 可在此防抖后调用后端更新 dialogue
 }
 
-/** 将当前剧本内容保存到后端（创建/更新项目与集数），供「保存剧本」与「AI 生成」后自动保存共用 */
-async function saveScriptToBackend(content) {
-  const trimmed = (content ?? '').toString().trim()
-  if (!trimmed) return
-  const parsed = parseScriptIntoEpisodes(trimmed)
-  const multiFromMarkers = parsed.split && parsed.episodes.length >= 2
-  const toPayload = (list) =>
-    list.map((e, i) => ({
-      episode_number: i + 1,
-      title: (e.title && String(e.title).trim()) || '第' + (i + 1) + '集',
-      script_content: e.script_content ?? '',
-      description: null,
-      duration: 0,
-    }))
-
-  let dramaId = store.dramaId
-  const curEp = store.currentEpisode
-  if (!dramaId) {
-    const drama = await dramaAPI.create({
-      title: scriptTitle.value || '新故事',
-      description: storyInput.value?.trim() || trimmed.slice(0, 200),
-      genre: storyType.value || undefined,
-      style: generationStyle.value || undefined,
-      metadata: {
-        ...projectStylePromptMetadata(),
-        story_style: storyStyle.value || undefined,
-        aspect_ratio: projectAspectRatio.value || '16:9',
-      },
-    })
-    store.setDrama(drama)
-    dramaId = drama.id
-    savedCurrentEpisodeNumber.value = 1
-    const first = parsed.episodes[0] || { title: '', script_content: trimmed }
-    const episodes = multiFromMarkers
-      ? toPayload(parsed.episodes)
-      : [
-          {
-            episode_number: 1,
-            title: scriptTitle.value || first.title || '第1集',
-            script_content: first.script_content || trimmed,
-          },
-        ]
-    await dramaAPI.saveEpisodes(dramaId, episodes)
-    await loadDrama()
-    if (route.params.id === 'new') {
-      router.replace('/film/' + dramaId)
-    }
-    if (multiFromMarkers) {
-      ElMessage.success(`已按「第N集/章/节」拆分为 ${episodes.length} 集`)
-    }
-    return { created: true }
-  }
-  if (multiFromMarkers) {
-    savedCurrentEpisodeNumber.value = 1
-    const payload = toPayload(parsed.episodes)
-    await dramaAPI.saveEpisodes(dramaId, payload)
-    if (storyInput.value?.trim()) {
-      await dramaAPI.saveOutline(dramaId, {
-        summary: storyInput.value.trim(),
-        genre: storyType.value || undefined,
-        style: generationStyle.value || undefined,
-        metadata: {
-          ...projectStylePromptMetadata(),
-          story_style: storyStyle.value || undefined,
-          aspect_ratio: projectAspectRatio.value || '16:9',
-        },
-      }).catch(() => {})
-    }
-    await loadDrama()
-    ElMessage.success(`已按「第N集/章/节」拆分为 ${payload.length} 集`)
-    return { created: false, splitEpisodes: true }
-  }
-  const episodes = store.drama?.episodes || []
-  savedCurrentEpisodeNumber.value = curEp?.episode_number ?? 1
-  const updated = episodes.map((ep, i) => {
-    const num = ep.episode_number ?? i + 1
-    const isCurrent = curEp && Number(ep.id) === Number(curEp.id)
-    const first = parsed.episodes[0]
-    const singleBody = first?.script_content ?? trimmed
-    const singleTitle = first?.title && String(first.title).trim()
-    return {
-      episode_number: num,
-      title: isCurrent
-        ? scriptTitle.value || singleTitle || '第' + num + '集'
-        : ep.title || '',
-      script_content: isCurrent ? (parsed.episodes.length === 1 && singleTitle ? singleBody : trimmed) : (ep.script_content || ''),
-      description: ep.description,
-      duration: ep.duration,
-    }
+/** Create an empty production unit, then use only that episode's endpoint. */
+let episodeCreationFlight = null
+function ensureCurrentEpisode() {
+  if (store.currentEpisode) return Promise.resolve(store.currentEpisode)
+  const key = routeEpoch + ':' + String(route.params.id)
+  if (episodeCreationFlight?.key === key) return episodeCreationFlight.promise
+  const flight = { key }
+  flight.promise = ensureCurrentEpisodeOnce().finally(() => {
+    if (episodeCreationFlight === flight) episodeCreationFlight = null
   })
-  if (updated.length === 0) {
-    updated.push({ episode_number: 1, title: scriptTitle.value || '第1集', script_content: trimmed })
+  episodeCreationFlight = flight
+  return flight.promise
+}
+
+async function ensureCurrentEpisodeOnce() {
+  if (store.currentEpisode) return store.currentEpisode
+  if (store.dramaId && store.drama?.episodes?.length) throw new Error('请先选择当前集')
+  const epoch = routeEpoch
+  let did = store.dramaId
+  const originalRoute = route.params.id
+  const isActive = () => pageActive && routeEpoch === epoch && route.params.id === originalRoute
+  let project = store.drama
+  if (!did) {
+    project = await dramaAPI.create({
+      title: newProjectTitle.value.trim() || '新故事', description: newProjectBackground.value,
+      genre: storyType.value || undefined, style: generationStyle.value || undefined,
+      metadata: { ...projectStylePromptMetadata(), story_style: storyStyle.value || undefined, aspect_ratio: projectAspectRatio.value || '16:9' },
+    })
+    did = project.id
+    if (!isActive()) return null
+    store.setDrama({ ...project, episodes: [] })
   }
-  await dramaAPI.saveEpisodes(dramaId, updated)
-  if (storyInput.value?.trim()) {
-    await dramaAPI.saveOutline(dramaId, {
-      summary: storyInput.value.trim(),
-      genre: storyType.value || undefined,
-      style: generationStyle.value || undefined,
-      metadata: {
-        ...projectStylePromptMetadata(),
-        story_style: storyStyle.value || undefined,
-        aspect_ratio: projectAspectRatio.value || '16:9',
-      },
-    }).catch(() => {})
+  const ep = await dramaAPI.createEpisode(did, {
+    title: newEpisodeTitle.value || undefined, source_text: newEpisodeSource.value, description: newEpisodePremise.value,
+    script_content: newEpisodeScript.value, expected_collection_revision: project?.episodes_revision ?? 0,
+  })
+  if (!isActive()) return null
+  store.setDrama({ ...project, id: did, episodes: [ep], episodes_revision: ep.episodes_revision })
+  onEpisodeSelect(ep.id)
+  store.updateEpisodeDraft(did, ep.id, { title: newEpisodeTitle.value || ep.title, sourceText: newEpisodeSource.value, description: newEpisodePremise.value, scriptContent: newEpisodeScript.value })
+  if (originalRoute === 'new') {
+    await router.replace({ path: '/film/' + did, query: { episode: String(ep.id) } })
   }
-  await loadDrama()
-  return { created: false }
+  return isProjectActive(did) ? ep : null
+}
+
+/** Titles and chapter markers in a single script are plain text; only explicit import can split. */
+async function saveScriptToBackend(content) {
+  const created = !store.dramaId
+  const originalEpisodeId = store.currentEpisode?.id
+  const originalScope = captureCurrentScope()
+  const ep = await ensureCurrentEpisode()
+  if (originalEpisodeId && !originalScope()) return { scopeChanged: true }
+  if (!ep) return { scopeChanged: true }
+  const did = store.dramaId
+  const eid = ep.id
+  const isActive = captureCurrentScope()
+  // An existing episode keeps the exact text the user entered, including blank content.
+  if (content != null && store.currentEpisode?.id === eid && originalEpisodeId) {
+    store.updateEpisodeDraft(did, eid, { scriptContent: String(content) })
+  }
+  const snapshot = store.snapshotEpisodeDraft(did, eid)
+  if (store.getEpisodeDraft(did, eid)?.remoteConflict) throw new Error('本集有服务器更新，请先核对冲突版本')
+  const previousContent = store.currentEpisode?.script_content || ''
+  const saved = await dramaAPI.updateEpisode(did, eid, {
+    title: snapshot.title, source_text: snapshot.sourceText, description: snapshot.description, script_content: snapshot.scriptContent,
+    expected_revision: snapshot.baseRevision,
+  })
+  store.markEpisodeDraftSaved(did, eid, saved, snapshot)
+  if (previousContent !== snapshot.scriptContent) reviewEpisodeKeys.add(did + ':' + eid)
+  if (isActive()) await loadDrama()
+  return { created, dramaId: did, episodeId: eid, snapshot, scopeChanged: !isActive() }
+}
+
+async function adoptLocalDraft() {
+  if (!store.currentEpisode) return
+  const isActive = captureCurrentScope()
+  try {
+    await ElMessageBox.confirm('将保留本地草稿并覆盖刚刚查看的服务器版本。是否继续？', '保存冲突草稿', { type: 'warning' })
+    if (!isActive()) return
+    store.resolveEpisodeDraftConflict(store.dramaId, store.currentEpisode, 'local')
+    await onGenerateScript()
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close' && isActive()) ElMessage.error(error.message || '保存失败')
+  }
+}
+
+async function useServerDraft() {
+  const isActive = captureCurrentScope()
+  try {
+    await ElMessageBox.confirm('采用服务器版本将放弃本集未保存的草稿。是否继续？', '采用服务器版本', { type: 'warning' })
+    if (isActive() && store.currentEpisode) store.resolveEpisodeDraftConflict(store.dramaId, store.currentEpisode, 'server')
+  } catch (_) {}
+}
+
+function adoptGenerationCandidate() {
+  if (!store.currentEpisode || !generationCandidate.value) return
+  const candidate = generationCandidate.value
+  if (candidate.taskId) dismissedCandidateTaskIds.add(candidate.taskId)
+  store.updateEpisodeDraft(store.dramaId, store.currentEpisode.id, {
+    scriptContent: candidate.script_content,
+  })
+  delete generationCandidates[episodeKey.value]
 }
 
 /**
@@ -5197,34 +5290,43 @@ async function saveProjectSettings(includeGenerationStyle = false) {
 }
 
 async function onGenerateStory() {
-  trackFilmCreateAction('generate_script_click')
-  await runGenerateStoryFromPremise({
-    premise: storyInput.value,
-    storyStyle: storyStyle.value,
-    storyType: storyType.value,
-    storyEpisodeCount: storyEpisodeCount.value,
-    scriptTitle: scriptTitle.value,
-    generationStyle: generationStyle.value,
-    customStylePrompt: customStylePrompt.value,
-    projectAspectRatio: projectAspectRatio.value,
-    store,
-    router,
-    route,
-    loadDrama,
-    savedCurrentEpisodeNumber,
-    selectedEpisodeId,
-    onEpisodeSelect,
-  storyGenerating,
-  scriptGenerating,
-  pollTask,
-  replaceRouteWhenNew: true,
-    skipPostLoad: false,
-    onComplete: ({ episodeCount }) => {
-      trackFilmCreateAction('generate_script_complete', {
-        extra: { episode_count: episodeCount },
-      })
-    },
-  })
+  if (episodeSubmitBusy.value || isStoryGenRunning.value || scriptGenerating.value || productionPreparing.value) return
+  if (!sourceText.value.trim() && !storyInput.value.trim()) { ElMessage.warning('请先填写本集原文或改编要求'); return }
+  const originalScope = captureCurrentScope()
+  episodeSubmitBusy.value = true
+  if (scriptContent.value.trim()) {
+    try {
+      await ElMessageBox.confirm('重新生成只会更新本集剧本。已有分镜与素材会保留，请之后核对。是否继续？', '重新生成本集', { type: 'warning' })
+    } catch { episodeSubmitBusy.value = false; return }
+    if (!originalScope()) { episodeSubmitBusy.value = false; return }
+  }
+  let operation
+  try {
+    // Save source, optional instructions and existing edits before capturing the generation revision.
+    const saved = await saveScriptToBackend(scriptContent.value)
+    if (!saved || saved.scopeChanged) return
+    if (episodeDraft.value?.dirty) { ElMessage.warning('保存期间草稿有新修改，请确认后再生成'); return }
+    const did = saved.dramaId
+    const eid = saved.episodeId
+    const isActive = captureCurrentScope()
+    operation = did + ':' + eid
+    operationScope.value = operation
+    storyGenerating.value = true
+    episodeSubmitBusy.value = false
+    await runGenerateStoryFromPremise({
+      store, premise: storyInput.value,
+      storyStyle: storyStyle.value, storyType: storyType.value, referencePrevious: referencePrevious.value,
+      pollTask, isActive,
+      onApplied: async () => { reviewEpisodeKeys.add(operation); await loadDrama() },
+      onCandidate: async (candidate) => { generationCandidates[operation] = candidate; await loadDrama() },
+    })
+    trackFilmCreateAction('generate_script_complete', { extra: { episode_count: 1 } })
+  } catch (error) {
+    if (originalScope()) ElMessage.error(error.message || '生成失败')
+  } finally {
+    episodeSubmitBusy.value = false
+    if (operationScope.value === operation) { storyGenerating.value = false; operationScope.value = null }
+  }
 }
 
 function openSelectScriptDialog() {
@@ -5244,93 +5346,56 @@ async function loadSelectScriptList() {
   }
 }
 
-/**
- * 将源剧本的梗概 + 各集剧本写入当前工程（不跳转、不导入角色/分镜/视频）。
- * 在「新建故事」且尚未落库时，会创建新项目并跳转。
- */
+async function importEpisodeRows(rows, mode, { title = '导入故事', summary = '' } = {}) {
+  const did = store.dramaId
+  const isActive = captureCurrentScope()
+  const version = store.drama?.episodes_revision ?? 0
+  const payload = prepareEpisodeImport(rows, { mode, episodes: store.drama?.episodes || [] })
+  if (did) {
+    await ElMessageBox.confirm(
+      mode === 'append'
+        ? '将追加 ' + payload.length + ' 集，从第' + payload[0].episode_number + '集开始。确认导入？'
+        : '将全剧分集列表替换为 ' + payload.length + ' 集，现有 ' + (store.drama?.episodes?.length || 0) + ' 集。未包含的集会移出列表，保留集的已有分镜和素材需核对。确认替换？',
+      mode === 'append' ? '追加分集预览' : '替换全剧分集预览',
+      { type: mode === 'replace' ? 'warning' : 'info', confirmButtonText: mode === 'replace' ? '替换全剧分集' : '追加分集', cancelButtonText: '取消' },
+    )
+    if (!isActive()) return { scopeChanged: true }
+    const result = await dramaAPI.saveEpisodes(did, payload, { mode, expected_collection_revision: version })
+    if (!isActive()) return { scopeChanged: true, committed: true }
+    store.setDrama({ ...store.drama, episodes: mergeImportedEpisodeRows(store.drama.episodes || [], result.episodes), episodes_revision: result.episodes_revision })
+    try { await loadDrama() } catch (error) {
+      if (isActive()) ElMessage.warning('文字已导入成功，但刷新失败，请稍后刷新页面；无需重复导入。')
+    }
+    return { dramaId: did, count: payload.length, committed: true }
+  }
+  const created = await dramaAPI.create({ title, description: summary, metadata: {} })
+  if (!isActive()) return { scopeChanged: true }
+  const result = await dramaAPI.saveEpisodes(created.id, payload, { mode: 'replace', expected_collection_revision: created.episodes_revision ?? 0 })
+  if (!isActive()) return { scopeChanged: true, committed: true }
+  store.setDrama({ ...created, episodes: result.episodes, episodes_revision: result.episodes_revision })
+  await router.replace({ path: '/film/' + created.id, query: result.episodes?.[0]?.id ? { episode: String(result.episodes[0].id) } : {} })
+  return { dramaId: created.id, count: payload.length, committed: true }
+}
+
 async function onPickScriptFromDialog(sourceId) {
   if (!sourceId || selectScriptImporting.value) return
-  const srcNum = Number(sourceId)
-  const routeId = route.params.id
-  const targetFromRoute = routeId && routeId !== 'new' ? Number(routeId) : null
-  const targetId = store.dramaId ?? targetFromRoute ?? null
-
-  if (targetId != null && Number(targetId) === srcNum) {
-    ElMessage.info('当前打开的就是该项目')
-    return
-  }
-
-  if (targetId != null) {
-    try {
-      await ElMessageBox.confirm(
-        '将把所选剧本的「故事梗概」与「各集剧本正文」写入当前工程。不会导入角色、场景、分镜与视频。若源剧本集数更少，多出来的分集将从本工程移除（原分镜可能失效）。是否继续？',
-        '导入剧本到当前工程',
-        { type: 'warning', confirmButtonText: '导入', cancelButtonText: '取消' }
-      )
-    } catch {
-      return
-    }
-  }
-
+  if (Number(sourceId) === Number(store.dramaId)) { ElMessage.info('当前打开的就是该项目'); return }
+  const isActive = captureCurrentScope()
+  const mode = scriptImportMode.value
   selectScriptImporting.value = true
   try {
-    const src = await dramaAPI.get(srcNum)
-    const rawEps = [...(src.episodes || [])].sort(
-      (a, b) => (Number(a.episode_number) || 0) - (Number(b.episode_number) || 0)
-    )
-    const summary = (src.description || '').toString().trim()
-    const episodesPayload = rawEps.map((ep, i) => ({
-      episode_number: ep.episode_number != null ? Number(ep.episode_number) : i + 1,
-      title: (ep.title || '').toString(),
-      script_content: ep.script_content ?? '',
-      description: ep.description ?? null,
-      duration: ep.duration ?? 0,
-    }))
-
-    if (!targetId) {
-      if (episodesPayload.length === 0 && !summary) {
-        ElMessage.warning('所选剧本没有可导入的梗概或分集正文')
-        return
-      }
-      const title = (src.title || '新故事').toString().trim() || '新故事'
-      const created = await dramaAPI.create({
-        title,
-        description: summary || undefined,
-        metadata: {},
-      })
-      const workId = created.id
-      store.setDrama({ id: workId })
-      if (episodesPayload.length > 0) {
-        await dramaAPI.saveEpisodes(workId, episodesPayload)
-      }
-      if (summary) {
-        await dramaAPI.saveOutline(workId, { summary }).catch(() => {})
-      }
-      showSelectScriptDialog.value = false
-      router.replace('/film/' + workId)
-      ElMessage.success('已根据所选剧本创建项目并导入梗概与正文')
-      scriptWorkbenchMode.value = 'select'
-      return
-    }
-
-    if (summary) {
-      await dramaAPI.saveOutline(targetId, { summary }).catch(() => {})
-    }
-    if (episodesPayload.length > 0) {
-      await dramaAPI.saveEpisodes(targetId, episodesPayload)
-    } else if (!summary) {
-      ElMessage.warning('所选剧本没有可导入的梗概或分集正文')
-      return
-    }
-
+    const source = await dramaAPI.get(sourceId)
+    if (!isActive()) return
+    const rows = [...(source.episodes || [])].sort((a, b) => a.episode_number - b.episode_number)
+    const result = await importEpisodeRows(rows, mode, { title: source.title || '导入故事', summary: source.description || '' })
+    if (result.scopeChanged) return
     showSelectScriptDialog.value = false
-    await loadDrama()
-    ElMessage.success('已导入故事梗概与剧本（当前工程未切换）')
+    ElMessage.success('已导入 ' + result.count + ' 集文字内容')
     scriptWorkbenchMode.value = 'select'
-  } catch (e) {
-    ElMessage.error(e.message || '导入失败')
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close' && isActive()) ElMessage.error(error.message || '导入失败')
   } finally {
-    selectScriptImporting.value = false
+    if (pageActive) selectScriptImporting.value = false
   }
 }
 
@@ -5350,140 +5415,131 @@ watch(
 )
 
 function novelImportReset() {
+  if (novelImporting.value) return
   novelText.value = ''
   novelFileName.value = ''
   novelFileContent.value = ''
+  novelPreview.value = []
 }
 
 function onNovelFileChange(file) {
   novelFileName.value = file.name
+  novelPreview.value = []
   const reader = new FileReader()
-  reader.onload = (ev) => { novelFileContent.value = ev.target.result }
+  const epoch = routeEpoch
+  reader.onload = (event) => { if (pageActive && epoch === routeEpoch) novelFileContent.value = String(event.target.result || '') }
   reader.readAsText(file.raw || file, 'utf-8')
 }
 
+watch([novelImportMode, novelText, novelFileContent, novelMaxChapters, novelDestination], () => { novelPreview.value = [] })
+
 async function onImportNovel() {
+  if (novelImporting.value) return
   const text = novelImportMode.value === 'file' ? novelFileContent.value : novelText.value
-  if (!text?.trim()) {
-    ElMessage.warning('请输入或上传小说内容')
-    return
-  }
+  if (!text?.trim()) { ElMessage.warning('请输入或上传小说内容'); return }
+  const scopeIsActive = captureCurrentScope()
+  const destination = novelDestination.value
+  const inputMode = novelImportMode.value
+  const maxChapters = novelMaxChapters.value
+  const isActive = () => scopeIsActive()
+    && destination === novelDestination.value && inputMode === novelImportMode.value
+    && maxChapters === novelMaxChapters.value
+    && text === (inputMode === 'file' ? novelFileContent.value : novelText.value)
   novelImporting.value = true
   try {
-    const formData = new FormData()
-    if (novelImportMode.value === 'file' && novelFileContent.value) {
-      const blob = new Blob([novelFileContent.value], { type: 'text/plain' })
-      formData.append('file', blob, novelFileName.value || 'novel.txt')
-    } else {
-      formData.append('text', text)
-    }
-    formData.append('title', scriptTitle.value || '导入小说')
-    formData.append('max_chapters', String(novelMaxChapters.value))
-    formData.append('ai_summarize', String(novelAiSummarize.value))
-    const { default: axios } = await import('axios')
-    const baseURL = (await import('@/utils/request')).default.defaults.baseURL || '/api/v1'
-    const res = await axios.post(`${baseURL}/dramas/import-novel`, formData, {
-      headers: { 'Content-Type': 'multipart/form-data' }
-    })
-    let chapters = res.data?.data?.chapters || res.data?.chapters || []
-    if (!chapters.length) {
-      ElMessage.warning('未能识别到章节内容')
+    if (!novelPreview.value.length) {
+      const form = new FormData()
+      form.append('text', text)
+      form.append('title', scriptTitle.value || '导入小说')
+      form.append('max_chapters', String(maxChapters))
+      form.append('ai_summarize', 'false')
+      const { default: axios } = await import('axios')
+      const baseURL = (await import('@/utils/request')).default.defaults.baseURL || '/api/v1'
+      if (!isActive()) return
+      const response = await axios.post(baseURL + '/dramas/import-novel', form)
+      if (!isActive()) return
+      let chapters = response.data?.data?.chapters || response.data?.chapters || []
+      // Keep the server parser's complete source, including any preamble.
+      // Import never adapts or rewrites text; adaptation happens after source is saved.
+      // The same chapter limit applies to the server and the optional local splitter.
+      chapters = chapters.slice(0, Math.max(1, Math.floor(Number(maxChapters) || 1)))
+      if (!chapters.length) throw new Error('未能识别到章节正文')
+      novelPreview.value = chapters.map((chapter) => ({
+        title: chapter.title || '', source_text: String(chapter.content ?? chapter.script ?? ''),
+        script_content: '',
+      }))
       return
     }
-    // 若后端只识别出 1 章，但正文里有多处「第N集」行首标题，用前端规则再拆（与保存剧本一致）
-    const clientParsed = parseScriptIntoEpisodes(text)
-    if (clientParsed.split && clientParsed.episodes.length > chapters.length) {
-      chapters = clientParsed.episodes.map((e, i) => ({
-        index: i + 1,
-        title: e.title,
-        content: e.script_content,
-        script: e.script_content,
-      }))
-    }
-    const toEpisodeRow = (ch, i) => ({
-      episode_number: i + 1,
-      title: (ch.title && String(ch.title).trim()) || '第' + (i + 1) + '集',
-      script_content: String(ch.script ?? ch.content ?? '').trimEnd(),
-      description: null,
-      duration: 0,
-    })
-    const rows = chapters.map(toEpisodeRow)
-    const plainScript = episodesListToPlainScript(
-      rows.map((r) => ({ title: r.title, script_content: r.script_content }))
-    )
-    if (store.dramaId && rows.length >= 2) {
-      await dramaAPI.saveEpisodes(store.dramaId, rows)
-      await loadDrama()
-      ElMessage.success(`已导入并拆分为 ${rows.length} 集`)
+    const rows = novelPreview.value.map((row) => ({ ...row }))
+    if (destination === 'current') {
+      const content = text
+      if (sourceText.value.trim()) {
+        await ElMessageBox.confirm('将替换本集原文草稿，已有改编要求和剧本会保留。保存当前集后才写入服务器。是否继续？', '导入本集原文', { type: 'warning' })
+      }
+      if (!isActive()) return
+      sourceText.value = content
+      ElMessage.success('小说已放入本集原文草稿，请保存或生成本集剧本')
     } else {
-      store.setScriptContent(plainScript || rows[0]?.script_content || '')
-      ElMessage.success(
-        rows.length >= 2
-          ? `已导入 ${rows.length} 个章节（保存剧本时将写入多集）`
-          : `成功导入 ${rows.length} 个章节，请继续编辑剧本`
-      )
+      const result = await importEpisodeRows(rows, destination, { title: newProjectTitle.value || novelFileName.value || '导入小说', summary: newProjectBackground.value })
+      if (result.scopeChanged) return
+      ElMessage.success('已导入 ' + result.count + ' 集')
     }
     showNovelImport.value = false
-    novelImportReset()
-  } catch (e) {
-    ElMessage.error(e.message || '导入失败')
+    novelText.value = ''
+    novelFileContent.value = ''
+    novelFileName.value = ''
+    novelPreview.value = []
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close' && isActive()) ElMessage.error(error.response?.data?.error?.message || error.message || '导入失败')
   } finally {
-    novelImporting.value = false
+    if (pageActive) novelImporting.value = false
+  }
+}
+
+async function prepareEpisodeProduction() {
+  if (scriptGenerating.value || episodeSubmitBusy.value || productionPreparing.value) return false
+  if (!store.currentEpisode || !scriptContent.value.trim()) {
+    ElMessage.warning('请先填写并保存本集剧本')
+    return false
+  }
+  const isActive = captureCurrentScope()
+  productionPreparing.value = true
+  try {
+    if (episodeDraft.value?.remoteConflict) throw new Error('本集有服务器更新，请先核对冲突版本')
+    if (episodeDraft.value?.dirty) {
+      const saved = await saveScriptToBackend(scriptContent.value)
+      if (!saved || saved.scopeChanged || !isActive()) return false
+      if (episodeDraft.value?.dirty) throw new Error('保存期间草稿有新修改，请确认后重试')
+    }
+    return isActive()
+  } catch (error) {
+    if (isActive()) {
+      ElMessage.error(error.message || '保存本集失败，未启动生成')
+      if (error.response?.status === 409) await loadDrama()
+    }
+    return false
+  } finally {
+    productionPreparing.value = false
   }
 }
 
 async function onGenerateScript() {
-  trackFilmCreateAction('save_script_click')
-  const content = (scriptContent.value ?? store.scriptContent ?? '').toString().trim()
-  if (!content) {
-    ElMessage.warning('请先在「故事生成」中点击 AI 生成，或手动输入剧本内容')
-    return
-  }
+  if (scriptGenerating.value || episodeSubmitBusy.value || productionPreparing.value) return
+  const isActive = captureCurrentScope()
   scriptGenerating.value = true
   try {
-    const result = await saveScriptToBackend(content)
-    if (result?.created) {
-      ElMessage.success('项目已创建，剧本已保存')
-    } else {
-      ElMessage.success('剧本已保存')
+    const result = await saveScriptToBackend(scriptContent.value)
+    if (result && !result.scopeChanged) {
+      ElMessage.success(result.created ? '项目已创建，本集已保存' : '本集已保存')
+      trackFilmCreateAction('save_script_complete', { extra: { created_project: !!result.created } })
     }
-    trackFilmCreateAction('save_script_complete', {
-      extra: { created_project: !!result?.created },
-    })
-  } catch (e) {
-    ElMessage.error(e.message || '保存失败')
+  } catch (error) {
+    if (isActive()) {
+      ElMessage.error(error.message || '保存失败')
+      if (error.code === 'REVISION_CONFLICT' || error.response?.status === 409) await loadDrama()
+    }
   } finally {
     scriptGenerating.value = false
-  }
-}
-
-async function onAddEpisode() {
-  if (!store.dramaId) return
-  const list = store.drama?.episodes || []
-  const nextNum = list.length > 0
-    ? Math.max(...list.map((e) => Number(e.episode_number) || 0), 0) + 1
-    : 1
-  const updated = list.map((ep, i) => ({
-    episode_number: ep.episode_number ?? i + 1,
-    title: ep.title || '第' + (ep.episode_number ?? i + 1) + '集',
-    script_content: ep.script_content || '',
-    description: ep.description,
-    duration: ep.duration
-  }))
-  updated.push({
-    episode_number: nextNum,
-    title: '第' + nextNum + '集',
-    script_content: '',
-    description: null,
-    duration: 0
-  })
-  try {
-    await dramaAPI.saveEpisodes(store.dramaId, updated)
-    savedCurrentEpisodeNumber.value = nextNum
-    await loadDrama()
-    ElMessage.success('已添加第' + nextNum + '集')
-  } catch (e) {
-    ElMessage.error(e.message || '添加失败')
   }
 }
 
@@ -6185,6 +6241,7 @@ async function onPolishUniversalSegmentPromptStream(sb, opts = {}) {
  * @param {{ checkPause?: () => Promise<void>, onShotProgress?: (cur:number,total:number,sb:object)=>void, onShotError?: (sb:object,msg:string)=>void }} opts
  */
 async function polishUniversalSegmentsAfterGeneration(opts = {}) {
+  const isActive = captureCurrentScope()
   const checkPause = typeof opts.checkPause === 'function' ? opts.checkPause : async () => {}
   const onShotProgress = typeof opts.onShotProgress === 'function' ? opts.onShotProgress : null
   const onShotError = typeof opts.onShotError === 'function' ? opts.onShotError : null
@@ -6203,8 +6260,9 @@ async function polishUniversalSegmentsAfterGeneration(opts = {}) {
   let polished = 0
   try {
     for (let i = 0; i < targets.length; i++) {
-      if (universalOmniPolishAbort.value) break
+      if (universalOmniPolishAbort.value || !isActive()) break
       await checkPause()
+      if (!isActive()) break
       const sb = targets[i]
       const cur = i + 1
       const label = '#' + (sb.storyboard_number ?? cur) + (sb.title ? ' ' + String(sb.title).slice(0, 20) : '')
@@ -6227,10 +6285,12 @@ async function polishUniversalSegmentsAfterGeneration(opts = {}) {
             force_without_reference_images: true,
           },
           (delta) => {
+            if (!isActive()) return
             live += delta
             sbUniversalSegmentText.value = { ...sbUniversalSegmentText.value, [sb.id]: live }
           }
         )
+        if (!isActive()) break
         const text = (data?.universal_segment_text ?? '').toString().trim()
         if (text) {
           polished += 1
@@ -6242,6 +6302,8 @@ async function polishUniversalSegmentsAfterGeneration(opts = {}) {
           }
         }
       } catch (e) {
+        if (e?.pipelineAborted) throw e
+        if (!isActive()) break
         const msg = e?.message || String(e)
         if (onShotError) onShotError(sb, msg)
         else ElMessage.warning(`分镜 #${sb.storyboard_number ?? sb.id} 全能润色失败：${msg}`)
@@ -6909,8 +6971,11 @@ async function onUsePrevTailAsFirst(sb) {
 /** 生成期间轻量刷新分镜列表（只更新指定集 storyboards，不重载整个 drama） */
 async function refreshStoryboardsForEpisode(episodeId) {
   if (!episodeId) return
+  const did = dramaId.value
+  const epoch = routeEpoch
   try {
     const res = await dramaAPI.getStoryboards(episodeId)
+    if (!isProjectActive(did) || epoch !== routeEpoch) return
     const list = Array.isArray(res) ? res : (res?.storyboards ?? null)
     if (!Array.isArray(list)) return
     if (Number(store.currentEpisode?.id) === Number(episodeId)) {
@@ -6929,6 +6994,8 @@ async function refreshStoryboardsOnly() {
 }
 
 async function onGenerateStoryboard() {
+  if (!await prepareEpisodeProduction()) return
+  const isActive = captureCurrentScope()
   trackFilmCreateAction('generate_storyboard_click')
   const epId = currentEpisodeId.value
   if (!epId) return
@@ -6956,7 +7023,9 @@ async function onGenerateStoryboard() {
         sbTruncatedDismissed.value = false
       }
     }
+    if (!isActive()) return
     await loadDrama()
+    if (!isActive()) return
     // 生成完成后静默补全空缺的摄影参数（只填未填字段，不覆盖 AI 已填的）
     storyboardsAPI.batchInferParams(epId, false).catch(() => {})
     const polishRes = await polishUniversalSegmentsAfterGeneration({})
@@ -7320,11 +7389,13 @@ function resolvePollMeta(meta = {}) {
 }
 
 function pollTask(taskId, onDone, meta = {}, options = {}) {
-  return genStore.pollTask(taskId, resolvePollMeta(meta), onDone, { ElMessage, showErrorToast: !options.silent, showTimeoutToast: !options.silent })
+  const isActive = captureCurrentScope()
+  return genStore.pollTask(taskId, resolvePollMeta(meta), onDone, { ElMessage, isActive, showErrorToast: !options.silent, showTimeoutToast: !options.silent })
 }
 
 /** 一键生成视频：暂停时等待，返回 { paused: true } 表示被暂停中断 */
 function pollTaskWithPause(taskId, onDone, meta = {}) {
+  if (taskId) pipelineTaskIds.add(taskId)
   const resolvedMeta = resolvePollMeta(meta)
   const trackInStore = resolvedMeta.resourceType !== 'unknown' && resolvedMeta.resourceId != null
   if (trackInStore && taskId) {
@@ -7340,7 +7411,7 @@ function pollTaskWithPause(taskId, onDone, meta = {}) {
       else genStore.markFailed({ ...resolvedMeta, taskId }, error || '任务失败')
     }
     const tick = async () => {
-      if (pipelineAbortRequested.value) {
+      if (pipelineAbortRequested.value || !pageActive || (pipelineScope && !pipelineScope())) {
         finishStore('failed', '全流程已取消')
         reject(Object.assign(new Error('全流程已取消'), { pipelineAborted: true }))
         return
@@ -7352,7 +7423,7 @@ function pollTaskWithPause(taskId, onDone, meta = {}) {
       attempts++
       try {
         const t = await taskAPI.get(taskId)
-        if (pipelineAbortRequested.value) {
+        if (pipelineAbortRequested.value || !pageActive || (pipelineScope && !pipelineScope())) {
           finishStore('failed', '全流程已取消')
           reject(Object.assign(new Error('全流程已取消'), { pipelineAborted: true }))
           return
@@ -7403,6 +7474,7 @@ function addPipelineError(step, message) {
 }
 
 async function checkPause() {
+  assertPipelineScope()
   if (pipelineAbortRequested.value) {
     throw Object.assign(new Error('全流程已取消'), { pipelineAborted: true })
   }
@@ -7411,6 +7483,7 @@ async function checkPause() {
       throw Object.assign(new Error('全流程已取消'), { pipelineAborted: true })
     }
     await waitForResume()
+    assertPipelineScope()
   }
 }
 
@@ -7445,10 +7518,13 @@ async function pipelineWithRetry(stepName, fn, maxRetries = 3) {
   let lastErr
   for (let r = 0; r < maxRetries; r++) {
     try {
+      await checkPause()
       const result = await fn()
+      assertPipelineScope()
       if (result && result.paused === true) return result
       return true
     } catch (e) {
+      if (e?.pipelineAborted) throw e
       lastErr = e
       if (r < maxRetries - 1) await pipelineRest()
     }
@@ -7458,6 +7534,7 @@ async function pipelineWithRetry(stepName, fn, maxRetries = 3) {
 }
 
 async function startOneClickPipeline() {
+  if (!await prepareEpisodeProduction()) return
   if (!currentEpisodeId.value || pipelineRunning.value || resourceImageBatchRunning.value) return
   trackFilmCreateAction('one_click_generate_start')
   pipelineErrorLog.value = []
@@ -7465,6 +7542,8 @@ async function startOneClickPipeline() {
   pipelineStepIndex.value = 0
   pipelineActiveTasks.clear()
   pipelineStepTotal.value = 10
+  pipelineScope = captureCurrentScope()
+  pipelineTaskIds.clear()
   pipelineRunning.value = true
   pipelinePaused.value = false
   pipelineAbortRequested.value = false
@@ -7479,12 +7558,15 @@ async function startOneClickPipeline() {
 }
 
 async function startTextFrameworkPipeline() {
+  if (!await prepareEpisodeProduction()) return
   if (!currentEpisodeId.value || pipelineRunning.value || resourceImageBatchRunning.value) return
   pipelineErrorLog.value = []
   pipelineCurrentStep.value = ''
   pipelineStepIndex.value = 0
   pipelineActiveTasks.clear()
   pipelineStepTotal.value = 4
+  pipelineScope = captureCurrentScope()
+  pipelineTaskIds.clear()
   pipelineRunning.value = true
   pipelinePaused.value = false
   pipelineAbortRequested.value = false
@@ -7521,17 +7603,18 @@ async function runOneClickPipeline(textOnly = false) {
       setPipelineStep(1, '提取角色...')
       try {
         const outline = (store.scriptContent || '').toString().trim() || (storyInput.value || '').toString().trim() || undefined
-        const res = await generationAPI.generateCharacters(dramaIdVal, { episode_id: store.currentEpisode?.id ?? undefined, outline: outline || undefined })
+        const res = await pipelineRequest(async () => (generationAPI.generateCharacters(dramaIdVal, { episode_id: store.currentEpisode?.id ?? undefined, outline: outline || undefined })))
         const taskId = res?.task_id
         if (taskId) {
-          const result = await pollTaskWithPause(taskId, () => loadDrama())
+          const result = await pipelineRequest(async () => (pollTaskWithPause(taskId, () => loadDrama())))
           if (result?.paused) { await waitForResume(); return }
           if (result?.error) { addPipelineError('提取角色', result.error); return }
         } else {
-          await loadDrama()
+          await pipelineRequest(async () => (loadDrama()))
         }
-        await pipelineRest()
+        await pipelineRequest(async () => (pipelineRest()))
       } catch (e) {
+      if (e?.pipelineAborted) return
         addPipelineError('提取角色', e.message || String(e))
         return
       }
@@ -7546,17 +7629,18 @@ async function runOneClickPipeline(textOnly = false) {
     if (sceneList.length === 0) {
       setPipelineStep(2, '提取场景...')
       try {
-        const res = await dramaAPI.extractBackgrounds(episodeId, { model: undefined, style, language: scriptLanguage.value })
+        const res = await pipelineRequest(async () => (dramaAPI.extractBackgrounds(episodeId, { model: undefined, style, language: scriptLanguage.value })))
         const taskId = res?.task_id
         if (taskId) {
-          const result = await pollTaskWithPause(taskId, () => loadDrama())
+          const result = await pipelineRequest(async () => (pollTaskWithPause(taskId, () => loadDrama())))
           if (result?.paused) { await waitForResume(); return }
           if (result?.error) { addPipelineError('提取场景', result.error); return }
         } else {
-          await loadDrama()
+          await pipelineRequest(async () => (loadDrama()))
         }
-        await pipelineRest()
+        await pipelineRequest(async () => (pipelineRest()))
       } catch (e) {
+      if (e?.pipelineAborted) return
         addPipelineError('提取场景', e.message || String(e))
         return
       }
@@ -7571,17 +7655,18 @@ async function runOneClickPipeline(textOnly = false) {
     if (propList.length === 0) {
       setPipelineStep(3, '提取道具...')
       try {
-        const res = await propAPI.extractFromScript(episodeId)
+        const res = await pipelineRequest(async () => (propAPI.extractFromScript(episodeId)))
         const taskId = res?.task_id
         if (taskId) {
-          const result = await pollTaskWithPause(taskId, () => loadDrama())
+          const result = await pipelineRequest(async () => (pollTaskWithPause(taskId, () => loadDrama())))
           if (result?.paused) { await waitForResume(); return }
           if (result?.error) { addPipelineError('提取道具', result.error); return }
         } else {
-          await loadDrama()
+          await pipelineRequest(async () => (loadDrama()))
         }
-        await pipelineRest()
+        await pipelineRequest(async () => (pipelineRest()))
       } catch (e) {
+      if (e?.pipelineAborted) return
         addPipelineError('提取道具', e.message || String(e))
         // 道具提取失败不中断流程
       }
@@ -7592,7 +7677,7 @@ async function runOneClickPipeline(textOnly = false) {
 
     // 步骤 4：生成分镜脚本
     await checkPause()
-    await loadStoryboardMedia()
+    await pipelineRequest(async () => (loadStoryboardMedia()))
     let boards = store.storyboards || []
     const hadBoardsBeforeStep4 = boards.length > 0
     if (boards.length === 0) {
@@ -7600,21 +7685,21 @@ async function runOneClickPipeline(textOnly = false) {
       // 与手动生成一样，每 2 秒刷新一次分镜列表，让已解析的分镜逐步显示
       const sbRefreshTimer = setInterval(refreshStoryboardsOnly, 2000)
       try {
-        const res = await dramaAPI.generateStoryboard(episodeId, {
+        const res = await pipelineRequest(async () => (dramaAPI.generateStoryboard(episodeId, {
           style,
           aspect_ratio: projectAspectRatio.value || '16:9',
           storyboard_count: getStoryboardCountForApi(),
           video_duration: getVideoDurationForApi(),
           include_narration: !!storyboardIncludeNarration.value,
           universal_omni_storyboard: !!storyboardUniversalOmni.value,
-        })
+        })))
         const taskId = res?.task_id ?? (typeof res === 'string' ? res : null)
         if (taskId) {
-          const result = await pollTaskWithPause(taskId, () => loadDrama())
+          const result = await pipelineRequest(async () => (pollTaskWithPause(taskId, () => loadDrama())))
           if (result?.paused) { clearInterval(sbRefreshTimer); await waitForResume(); return }
           if (result?.error) {
             // 任务失败，但后端可能已保存了部分分镜，确保最新状态显示出来再停止
-            await loadDrama()
+            await pipelineRequest(async () => (loadDrama()))
             addPipelineError('生成分镜', result.error)
             clearInterval(sbRefreshTimer)
             return
@@ -7624,15 +7709,16 @@ async function runOneClickPipeline(textOnly = false) {
             sbTruncatedDismissed.value = false
           }
         }
-        await loadDrama()
-        await pipelineRest()
+        await pipelineRequest(async () => (loadDrama()))
+        await pipelineRequest(async () => (pipelineRest()))
       } catch (e) {
+      if (e?.pipelineAborted) return
         addPipelineError('生成分镜', e.message || String(e))
         clearInterval(sbRefreshTimer)
         return
       }
       clearInterval(sbRefreshTimer)
-      await loadStoryboardMedia()
+      await pipelineRequest(async () => (loadStoryboardMedia()))
       boards = store.storyboards || []
     } else {
       setPipelineStep(4, `已有 ${boards.length} 个分镜，跳过生成`)
@@ -7641,7 +7727,7 @@ async function runOneClickPipeline(textOnly = false) {
     const generatedSbThisPipeline = !hadBoardsBeforeStep4
     if (generatedSbThisPipeline && storyboardUniversalOmni.value) {
       await checkPause()
-      await polishUniversalSegmentsAfterGeneration({
+      await pipelineRequest(async () => (polishUniversalSegmentsAfterGeneration({
         checkPause,
         onShotProgress: (cur, total, sb) =>
           setPipelineStep(
@@ -7650,9 +7736,9 @@ async function runOneClickPipeline(textOnly = false) {
           ),
         onShotError: (sb, msg) =>
           addPipelineError('润色全能分镜', `镜#${sb.storyboard_number ?? sb.id}: ${msg}`),
-      })
-      await loadDrama()
-      await loadStoryboardMedia()
+      })))
+      await pipelineRequest(async () => (loadDrama()))
+      await pipelineRequest(async () => (loadStoryboardMedia()))
     }
 
     if (textOnly) {
@@ -7664,7 +7750,7 @@ async function runOneClickPipeline(textOnly = false) {
     // ════════════════════════════════════════════════════════
     // ⏱ 倒计时 20 秒：请浏览分镜内容，确认后开始生成角色/场景/道具图片
     // ════════════════════════════════════════════════════════
-    await runPipelineCountdown(20, '分镜脚本生成完毕，请浏览确认内容。倒计时结束后将开始生成角色、场景、道具图片。')
+    await pipelineRequest(async () => (runPipelineCountdown(20, '分镜脚本生成完毕，请浏览确认内容。倒计时结束后将开始生成角色、场景、道具图片。')))
     await checkPause()
 
     // ════════════════════════════════════════════════════════
@@ -7676,32 +7762,32 @@ async function runOneClickPipeline(textOnly = false) {
       const charsWithoutImage = chars.filter((c) => !hasAssetImage(c))
       const concurrency = pipelineConcurrency.value
       setPipelineStep(5, `生成角色图（${charsWithoutImage.length} 个，并发 ${concurrency}）...`)
-      const { paused } = await runConcurrently(charsWithoutImage, concurrency, async (char) => {
+      const { paused } = await pipelineRequest(async () => (runConcurrently(charsWithoutImage, concurrency, async (char) => {
         await checkPause()
         generatingCharIds.add(char.id)
         try {
           const stepName = '角色图 ' + (char.name || char.id)
-          const ok = await pipelineWithRetry(stepName, async () => {
-            const res = await characterAPI.generateImage(char.id, undefined, style)
+          const ok = await pipelineRequest(async () => (pipelineWithRetry(stepName, async () => {
+            const res = await pipelineRequest(async () => (characterAPI.generateImage(char.id, undefined, style)))
             const taskId = res?.image_generation?.task_id ?? res?.task_id
             if (taskId) {
-              const result = await pollTaskWithPause(taskId, () => loadDrama())
+              const result = await pipelineRequest(async () => (pollTaskWithPause(taskId, () => loadDrama())))
               if (result?.paused) return { paused: true }
               if (result?.error) throw new Error(result.error)
             } else {
-              await loadDrama()
-              await pollUntilResourceHasImage(() => {
+              await pipelineRequest(async () => (loadDrama()))
+              await pipelineRequest(async () => (pollUntilResourceHasImage(() => {
                 const list = store.currentEpisode?.characters ?? []
                 const c = list.find((x) => Number(x.id) === Number(char.id))
                 return !!(c && (c.image_url || c.local_path))
-              })
+              })))
             }
-          })
+          })))
           if (ok && typeof ok === 'object' && ok.paused) return { paused: true }
         } finally {
           generatingCharIds.delete(char.id)
         }
-      }, { getLabel: (char) => '角色图 ' + (char.name || char.id) })
+      }, { getLabel: (char) => '角色图 ' + (char.name || char.id) })))
       if (paused) { await waitForResume() }
     }
 
@@ -7711,33 +7797,33 @@ async function runOneClickPipeline(textOnly = false) {
       const concurrency = pipelineConcurrency.value
       setPipelineStep(6, `生成场景图（${scenesWithoutImage.length} 个，并发 ${concurrency}）...`)
       await checkPause()
-      const { paused } = await runConcurrently(scenesWithoutImage, concurrency, async (scene) => {
+      const { paused } = await pipelineRequest(async () => (runConcurrently(scenesWithoutImage, concurrency, async (scene) => {
         await checkPause()
         generatingSceneIds.add(scene.id)
         try {
           const stepName = '场景图 ' + (scene.location || scene.id)
-          const ok = await pipelineWithRetry(stepName, async () => {
+          const ok = await pipelineRequest(async () => (pipelineWithRetry(stepName, async () => {
             const useQuad = !!sceneUseQuadGrid.value
-            const res = await sceneAPI.generateImage({ scene_id: scene.id, model: undefined, style, use_quad_grid: useQuad })
+            const res = await pipelineRequest(async () => (sceneAPI.generateImage({ scene_id: scene.id, model: undefined, style, use_quad_grid: useQuad })))
             const taskId = res?.image_generation?.task_id ?? res?.task_id
             if (taskId) {
-              const result = await pollTaskWithPause(taskId, () => loadDrama())
+              const result = await pipelineRequest(async () => (pollTaskWithPause(taskId, () => loadDrama())))
               if (result?.paused) return { paused: true }
               if (result?.error) throw new Error(result.error)
             } else {
-              await loadDrama()
-              await pollUntilResourceHasImage(() => {
+              await pipelineRequest(async () => (loadDrama()))
+              await pipelineRequest(async () => (pollUntilResourceHasImage(() => {
                 const list = store.currentEpisode?.scenes ?? []
                 const s = list.find((x) => Number(x.id) === Number(scene.id))
                 return !!(s && (s.image_url || s.local_path))
-              })
+              })))
             }
-          })
+          })))
           if (ok && typeof ok === 'object' && ok.paused) return { paused: true }
         } finally {
           generatingSceneIds.delete(scene.id)
         }
-      }, { getLabel: (scene) => '场景图 ' + (scene.location || scene.id) })
+      }, { getLabel: (scene) => '场景图 ' + (scene.location || scene.id) })))
       if (paused) { await waitForResume() }
     }
 
@@ -7747,39 +7833,39 @@ async function runOneClickPipeline(textOnly = false) {
       const concurrency = pipelineConcurrency.value
       setPipelineStep(7, `生成道具图（${propsWithoutImage.length} 个，并发 ${concurrency}）...`)
       await checkPause()
-      const { paused } = await runConcurrently(propsWithoutImage, concurrency, async (prop) => {
+      const { paused } = await pipelineRequest(async () => (runConcurrently(propsWithoutImage, concurrency, async (prop) => {
         await checkPause()
         generatingPropIds.add(prop.id)
         try {
           const stepName = '道具图 ' + (prop.name || prop.id)
-          const ok = await pipelineWithRetry(stepName, async () => {
-            const res = await propAPI.generateImage(prop.id, undefined, style)
+          const ok = await pipelineRequest(async () => (pipelineWithRetry(stepName, async () => {
+            const res = await pipelineRequest(async () => (propAPI.generateImage(prop.id, undefined, style)))
             const taskId = res?.image_generation?.task_id ?? res?.task_id
             if (taskId) {
-              const result = await pollTaskWithPause(taskId, () => loadDrama())
+              const result = await pipelineRequest(async () => (pollTaskWithPause(taskId, () => loadDrama())))
               if (result?.paused) return { paused: true }
               if (result?.error) throw new Error(result.error)
             } else {
-              await loadDrama()
-              await pollUntilResourceHasImage(() => {
+              await pipelineRequest(async () => (loadDrama()))
+              await pipelineRequest(async () => (pollUntilResourceHasImage(() => {
                 const list = store.props ?? []
                 const p = list.find((x) => Number(x.id) === Number(prop.id))
                 return !!(p && (p.image_url || p.local_path))
-              })
+              })))
             }
-          })
+          })))
           if (ok && typeof ok === 'object' && ok.paused) return { paused: true }
         } finally {
           generatingPropIds.delete(prop.id)
         }
-      }, { getLabel: (prop) => '道具图 ' + (prop.name || prop.id) })
+      }, { getLabel: (prop) => '道具图 ' + (prop.name || prop.id) })))
       if (paused) { await waitForResume() }
     }
 
     // ════════════════════════════════════════════════════════
     // ⏱ 倒计时 30 秒：请浏览角色/场景/道具图，确认后开始生成分镜图
     // ════════════════════════════════════════════════════════
-    await runPipelineCountdown(30, '角色、场景、道具图片生成完毕，请浏览确认效果。倒计时结束后将开始生成分镜图（消耗较多 Token）。')
+    await pipelineRequest(async () => (runPipelineCountdown(30, '角色、场景、道具图片生成完毕，请浏览确认效果。倒计时结束后将开始生成分镜图（消耗较多 Token）。')))
     await checkPause()
 
     // ════════════════════════════════════════════════════════
@@ -7788,29 +7874,29 @@ async function runOneClickPipeline(textOnly = false) {
 
     // 步骤 8：生成分镜图
     {
-      await loadStoryboardMedia()
+      await pipelineRequest(async () => (loadStoryboardMedia()))
       boards = store.storyboards || []
       const boardsWithoutImg = boards.filter((sb) => needsSbImageGeneration(sb))
       const concurrency = pipelineConcurrency.value
       setPipelineStep(8, `生成分镜图（${boardsWithoutImg.length} 个，并发 ${concurrency}）...`)
-      const { paused } = await runConcurrently(boardsWithoutImg, concurrency, async (sb) => {
+      const { paused } = await pipelineRequest(async () => (runConcurrently(boardsWithoutImg, concurrency, async (sb) => {
         await checkPause()
         const stepName = '分镜图 #' + (sb.storyboard_number ?? sb.id)
-        const ok = await pipelineWithRetry(stepName, () => generateMissingSbImages(sb, {
+        const ok = await pipelineRequest(async () => (pipelineWithRetry(stepName, () => generateMissingSbImages(sb, {
           targetDramaId: dramaIdVal,
           style,
           poll: pollTaskWithPause,
           beforeGenerate: checkPause,
-        }))
+        }))))
         if (ok && typeof ok === 'object' && ok.paused) return { paused: true }
-      }, { getLabel: (sb) => '分镜图 #' + (sb.storyboard_number ?? sb.id) })
+      }, { getLabel: (sb) => '分镜图 #' + (sb.storyboard_number ?? sb.id) })))
       if (paused) { await waitForResume() }
     }
 
     // ════════════════════════════════════════════════════════
     // ⏱ 倒计时 20 秒：请浏览分镜图，确认后开始生成分镜视频
     // ════════════════════════════════════════════════════════
-    await runPipelineCountdown(20, '分镜图生成完毕，请浏览确认图片效果。倒计时结束后将开始生成分镜视频（消耗最多 Token）。')
+    await pipelineRequest(async () => (runPipelineCountdown(20, '分镜图生成完毕，请浏览确认图片效果。倒计时结束后将开始生成分镜视频（消耗最多 Token）。')))
     await checkPause()
 
     // ════════════════════════════════════════════════════════
@@ -7819,7 +7905,7 @@ async function runOneClickPipeline(textOnly = false) {
 
     // 步骤 9：生成分镜视频
     {
-      await loadStoryboardMedia()
+      await pipelineRequest(async () => (loadStoryboardMedia()))
       const boards2 = (store.storyboards || []).filter((sb) => {
         const vidList = sbVideos.value[sb.id] || []
         if (vidList.some((v) => v.status === 'completed' && recordHasPlayableVideoUrl(v))) return false
@@ -7831,15 +7917,15 @@ async function runOneClickPipeline(textOnly = false) {
       })
       const concurrency = pipelineVideoConcurrency.value
       setPipelineStep(9, `生成分镜视频（${boards2.length} 个，并发 ${concurrency}）...`)
-      const { paused } = await runConcurrently(boards2, concurrency, async (sb) => {
+      const { paused } = await pipelineRequest(async () => (runConcurrently(boards2, concurrency, async (sb) => {
         await checkPause()
         generatingSbVideoIds.add(sb.id)
         try {
           const stepName = '分镜视频 #' + (sb.storyboard_number ?? sb.id)
-          const ok = await pipelineWithRetry(stepName, async () => {
+          const ok = await pipelineRequest(async () => (pipelineWithRetry(stepName, async () => {
             const universal = isSbUniversalMode(sb.id)
             const omniRefs = universal ? collectSbOmniReferenceAbsoluteUrls(sb) : []
-            const firstFrameUrl = await getMainImageUrlForVideo(sb)
+            const firstFrameUrl = await pipelineRequest(async () => (getMainImageUrlForVideo(sb)))
             const absoluteUrl = universal ? (omniRefs[0] || '') : toAbsoluteImageUrl(firstFrameUrl)
             const { first: vFirst, last: vLast } = sbVideoFirstLastUrls(sb, universal, null)
             let refUrls = universal
@@ -7848,7 +7934,7 @@ async function runOneClickPipeline(textOnly = false) {
             if (!universal && vLast && refUrls && !refUrls.includes(vLast)) {
               refUrls = [...refUrls, vLast]
             }
-            const res = await videosAPI.create({
+            const res = await pipelineRequest(async () => (videosAPI.create({
               drama_id: dramaIdVal,
               storyboard_id: sb.id,
               prompt: buildSbVideoPromptForApi(sb),
@@ -7860,19 +7946,19 @@ async function runOneClickPipeline(textOnly = false) {
               aspect_ratio: projectAspectRatio.value || '16:9',
               resolution: videoResolution.value || undefined,
               duration: getSbVideoDurationForApi(sb),
-            })
+            })))
             if (res?.task_id) {
               const meta = buildSbGenMeta(sb, GEN_RESOURCE.SB_VIDEO, '分镜视频')
-              const result = await pollTaskWithPause(res.task_id, () => loadSingleStoryboardMedia(sb.id), meta)
+              const result = await pipelineRequest(async () => (pollTaskWithPause(res.task_id, () => loadSingleStoryboardMedia(sb.id), meta)))
               if (result?.paused) return { paused: true }
               if (result?.error) throw new Error(result.error)
-            } else await loadSingleStoryboardMedia(sb.id)
-          })
+            } else await pipelineRequest(async () => (loadSingleStoryboardMedia(sb.id)))
+          })))
           if (ok && typeof ok === 'object' && ok.paused) return { paused: true }
         } finally {
           generatingSbVideoIds.delete(sb.id)
         }
-      }, { getLabel: (sb) => '分镜视频 #' + (sb.storyboard_number ?? sb.id) })
+      }, { getLabel: (sb) => '分镜视频 #' + (sb.storyboard_number ?? sb.id) })))
       if (paused) { await waitForResume() }
     }
 
@@ -7880,16 +7966,17 @@ async function runOneClickPipeline(textOnly = false) {
     await checkPause()
     setPipelineStep(10, '合成整集视频...')
     try {
-      const result = await dramaAPI.finalizeEpisode(episodeId, getFinalizeMergeOptions())
+      const result = await pipelineRequest(async () => (dramaAPI.finalizeEpisode(episodeId, getFinalizeMergeOptions())))
       if (result?.task_id != null) {
-        const pollResult = await pollTaskWithPause(result.task_id, () => loadDrama())
+        const pollResult = await pipelineRequest(async () => (pollTaskWithPause(result.task_id, () => loadDrama())))
         if (pollResult?.paused) { await waitForResume(); return }
         if (pollResult?.error) addPipelineError('合成整集视频', pollResult.error)
-        else await pipelineRest()
+        else await pipelineRequest(async () => (pipelineRest()))
       } else {
         addPipelineError('合成整集视频', result?.message || '本集没有可合成的视频片段')
       }
     } catch (e) {
+      if (e?.pipelineAborted) return
       addPipelineError('合成整集视频', e.message || String(e))
     }
 
@@ -7899,6 +7986,7 @@ async function runOneClickPipeline(textOnly = false) {
       extra: { error_count: pipelineErrorLog.value.length },
     })
   } catch (e) {
+      if (e?.pipelineAborted) return
     addPipelineError('流程', e.message || String(e))
     trackFilmCreateAction('one_click_generate_failed', {
       extra: { message: String(e?.message || 'failed').slice(0, 120) },
@@ -7907,12 +7995,16 @@ async function runOneClickPipeline(textOnly = false) {
 }
 
 async function startRepairPipeline() {
+  if (!await prepareEpisodeProduction()) return
   if (!currentEpisodeId.value || pipelineRunning.value || resourceImageBatchRunning.value) return
   pipelineErrorLog.value = []
   pipelineCurrentStep.value = ''
   pipelineActiveTasks.clear()
+  pipelineScope = captureCurrentScope()
+  pipelineTaskIds.clear()
   pipelineRunning.value = true
   pipelinePaused.value = false
+  pipelineAbortRequested.value = false
   try {
     await runRepairPipeline()
   } finally {
@@ -7930,7 +8022,7 @@ async function runRepairPipeline() {
 
   try {
     pipelineCurrentStep.value = '正在加载数据...'
-    await loadDrama()
+    await pipelineRequest(async () => (loadDrama()))
 
     // 1. 角色：没有则生成角色；再为每个无图角色生成图
     let chars = store.currentEpisode?.characters ?? []
@@ -7939,15 +8031,16 @@ async function runRepairPipeline() {
       pipelineCurrentStep.value = '正在生成角色列表...'
       try {
         const outline = (store.scriptContent || '').toString().trim() || (storyInput.value || '').toString().trim() || undefined
-        const res = await generationAPI.generateCharacters(dramaIdVal, { episode_id: store.currentEpisode?.id ?? undefined, outline: outline || undefined })
+        const res = await pipelineRequest(async () => (generationAPI.generateCharacters(dramaIdVal, { episode_id: store.currentEpisode?.id ?? undefined, outline: outline || undefined })))
         const taskId = res?.task_id
         if (taskId) {
-          const result = await pollTaskWithPause(taskId, () => loadDrama())
+          const result = await pipelineRequest(async () => (pollTaskWithPause(taskId, () => loadDrama())))
           if (result?.paused) { await waitForResume(); return }
           if (result?.error) { addPipelineError('生成角色', result.error); return }
-        } else await loadDrama()
-        await pipelineRest()
+        } else await pipelineRequest(async () => (loadDrama()))
+        await pipelineRequest(async () => (pipelineRest()))
       } catch (e) {
+      if (e?.pipelineAborted) return
         addPipelineError('生成角色', e.message || String(e))
         return
       }
@@ -7957,27 +8050,27 @@ async function runRepairPipeline() {
     {
       const concurrency = pipelineConcurrency.value
       pipelineCurrentStep.value = `正在生成角色图（并发${concurrency}）...`
-      const { paused } = await runConcurrently(charsWithoutImage, concurrency, async (char) => {
+      const { paused } = await pipelineRequest(async () => (runConcurrently(charsWithoutImage, concurrency, async (char) => {
         await checkPause()
         const stepName = '角色图 ' + (char.name || char.id)
-        const ok = await pipelineWithRetry(stepName, async () => {
-          const res = await characterAPI.generateImage(char.id, undefined, style)
+        const ok = await pipelineRequest(async () => (pipelineWithRetry(stepName, async () => {
+          const res = await pipelineRequest(async () => (characterAPI.generateImage(char.id, undefined, style)))
           const taskId = res?.image_generation?.task_id ?? res?.task_id
           if (taskId) {
-            const result = await pollTaskWithPause(taskId, () => loadDrama())
+            const result = await pipelineRequest(async () => (pollTaskWithPause(taskId, () => loadDrama())))
             if (result?.paused) return { paused: true }
             if (result?.error) throw new Error(result.error)
           } else {
-            await loadDrama()
-            await pollUntilResourceHasImage(() => {
+            await pipelineRequest(async () => (loadDrama()))
+            await pipelineRequest(async () => (pollUntilResourceHasImage(() => {
               const list = store.currentEpisode?.characters ?? []
               const c = list.find((x) => Number(x.id) === Number(char.id))
               return !!(c && (c.image_url || c.local_path))
-            })
+            })))
           }
-        })
+        })))
         if (ok && typeof ok === 'object' && ok.paused) return { paused: true }
-      }, { getLabel: (char) => '角色图 ' + (char.name || char.id) })
+      }, { getLabel: (char) => '角色图 ' + (char.name || char.id) })))
       if (paused) { await waitForResume() }
     }
 
@@ -7987,15 +8080,16 @@ async function runRepairPipeline() {
       await checkPause()
       pipelineCurrentStep.value = '正在提取场景...'
       try {
-        const res = await dramaAPI.extractBackgrounds(episodeId, { model: undefined, style, language: scriptLanguage.value })
+        const res = await pipelineRequest(async () => (dramaAPI.extractBackgrounds(episodeId, { model: undefined, style, language: scriptLanguage.value })))
         const taskId = res?.task_id
         if (taskId) {
-          const result = await pollTaskWithPause(taskId, () => loadDrama())
+          const result = await pipelineRequest(async () => (pollTaskWithPause(taskId, () => loadDrama())))
           if (result?.paused) { await waitForResume(); return }
           if (result?.error) { addPipelineError('提取场景', result.error); return }
-        } else await loadDrama()
-        await pipelineRest()
+        } else await pipelineRequest(async () => (loadDrama()))
+        await pipelineRequest(async () => (pipelineRest()))
       } catch (e) {
+      if (e?.pipelineAborted) return
         addPipelineError('提取场景', e.message || String(e))
         return
       }
@@ -8005,28 +8099,28 @@ async function runRepairPipeline() {
     {
       const concurrency = pipelineConcurrency.value
       pipelineCurrentStep.value = `正在生成场景图（并发${concurrency}）...`
-      const { paused } = await runConcurrently(scenesWithoutImage, concurrency, async (scene) => {
+      const { paused } = await pipelineRequest(async () => (runConcurrently(scenesWithoutImage, concurrency, async (scene) => {
         await checkPause()
         const stepName = '场景图 ' + (scene.location || scene.id)
-        const ok = await pipelineWithRetry(stepName, async () => {
+        const ok = await pipelineRequest(async () => (pipelineWithRetry(stepName, async () => {
           const useQuad = !!sceneUseQuadGrid.value
-          const res = await sceneAPI.generateImage({ scene_id: scene.id, model: undefined, style, use_quad_grid: useQuad })
+          const res = await pipelineRequest(async () => (sceneAPI.generateImage({ scene_id: scene.id, model: undefined, style, use_quad_grid: useQuad })))
           const taskId = res?.image_generation?.task_id ?? res?.task_id
           if (taskId) {
-            const result = await pollTaskWithPause(taskId, () => loadDrama())
+            const result = await pipelineRequest(async () => (pollTaskWithPause(taskId, () => loadDrama())))
             if (result?.paused) return { paused: true }
             if (result?.error) throw new Error(result.error)
           } else {
-            await loadDrama()
-            await pollUntilResourceHasImage(() => {
+            await pipelineRequest(async () => (loadDrama()))
+            await pipelineRequest(async () => (pollUntilResourceHasImage(() => {
               const list = store.currentEpisode?.scenes ?? []
               const s = list.find((x) => Number(x.id) === Number(scene.id))
               return !!(s && (s.image_url || s.local_path))
-            })
+            })))
           }
-        })
+        })))
         if (ok && typeof ok === 'object' && ok.paused) return { paused: true }
-      }, { getLabel: (scene) => '场景图 ' + (scene.location || scene.id) })
+      }, { getLabel: (scene) => '场景图 ' + (scene.location || scene.id) })))
       if (paused) { await waitForResume() }
     }
 
@@ -8036,15 +8130,16 @@ async function runRepairPipeline() {
       await checkPause()
       pipelineCurrentStep.value = '正在提取道具...'
       try {
-        const res = await propAPI.extractFromScript(episodeId)
+        const res = await pipelineRequest(async () => (propAPI.extractFromScript(episodeId)))
         const taskId = res?.task_id
         if (taskId) {
-          const result = await pollTaskWithPause(taskId, () => loadDrama())
+          const result = await pipelineRequest(async () => (pollTaskWithPause(taskId, () => loadDrama())))
           if (result?.paused) { await waitForResume(); return }
           if (result?.error) { addPipelineError('提取道具', result.error); /* 不中断 */ }
-        } else await loadDrama()
-        await pipelineRest()
+        } else await pipelineRequest(async () => (loadDrama()))
+        await pipelineRequest(async () => (pipelineRest()))
       } catch (e) {
+      if (e?.pipelineAborted) return
         addPipelineError('提取道具', e.message || String(e))
       }
       propList2 = store.props ?? []
@@ -8054,32 +8149,32 @@ async function runRepairPipeline() {
       const concurrency = pipelineConcurrency.value
       pipelineCurrentStep.value = `正在生成道具图（并发${concurrency}）...`
       await checkPause()
-      const { paused } = await runConcurrently(propsWithoutImage2, concurrency, async (prop) => {
+      const { paused } = await pipelineRequest(async () => (runConcurrently(propsWithoutImage2, concurrency, async (prop) => {
         await checkPause()
         generatingPropIds.add(prop.id)
         try {
           const stepName = '道具图 ' + (prop.name || prop.id)
-          const ok = await pipelineWithRetry(stepName, async () => {
-            const res = await propAPI.generateImage(prop.id, undefined, style)
+          const ok = await pipelineRequest(async () => (pipelineWithRetry(stepName, async () => {
+            const res = await pipelineRequest(async () => (propAPI.generateImage(prop.id, undefined, style)))
             const taskId = res?.image_generation?.task_id ?? res?.task_id
             if (taskId) {
-              const result = await pollTaskWithPause(taskId, () => loadDrama())
+              const result = await pipelineRequest(async () => (pollTaskWithPause(taskId, () => loadDrama())))
               if (result?.paused) return { paused: true }
               if (result?.error) throw new Error(result.error)
             } else {
-              await loadDrama()
-              await pollUntilResourceHasImage(() => {
+              await pipelineRequest(async () => (loadDrama()))
+              await pipelineRequest(async () => (pollUntilResourceHasImage(() => {
                 const list = store.props ?? []
                 const p = list.find((x) => Number(x.id) === Number(prop.id))
                 return !!(p && (p.image_url || p.local_path))
-              })
+              })))
             }
-          })
+          })))
           if (ok && typeof ok === 'object' && ok.paused) return { paused: true }
         } finally {
           generatingPropIds.delete(prop.id)
         }
-      }, { getLabel: (prop) => '道具图 ' + (prop.name || prop.id) })
+      }, { getLabel: (prop) => '道具图 ' + (prop.name || prop.id) })))
       if (paused) { await waitForResume() }
     }
 
@@ -8090,22 +8185,23 @@ async function runRepairPipeline() {
       await checkPause()
       pipelineCurrentStep.value = '正在生成分镜...'
       try {
-        const res = await dramaAPI.generateStoryboard(episodeId, {
+        const res = await pipelineRequest(async () => (dramaAPI.generateStoryboard(episodeId, {
           aspect_ratio: projectAspectRatio.value || '16:9',
           storyboard_count: getStoryboardCountForApi(),
           video_duration: getVideoDurationForApi(),
           include_narration: !!storyboardIncludeNarration.value,
           universal_omni_storyboard: !!storyboardUniversalOmni.value,
-        })
+        })))
         const taskId = res?.task_id ?? (typeof res === 'string' ? res : null)
         if (taskId) {
-          const result = await pollTaskWithPause(taskId, () => loadDrama())
+          const result = await pipelineRequest(async () => (pollTaskWithPause(taskId, () => loadDrama())))
           if (result?.paused) { await waitForResume(); return }
           if (result?.error) { addPipelineError('分镜生成', result.error); return }
         }
-        await loadDrama()
-        await pipelineRest()
+        await pipelineRequest(async () => (loadDrama()))
+        await pipelineRequest(async () => (pipelineRest()))
       } catch (e) {
+      if (e?.pipelineAborted) return
         addPipelineError('分镜生成', e.message || String(e))
         return
       }
@@ -8113,36 +8209,36 @@ async function runRepairPipeline() {
     }
     if (!hadBoardsBeforeRepairSb && storyboardUniversalOmni.value) {
       await checkPause()
-      await polishUniversalSegmentsAfterGeneration({
+      await pipelineRequest(async () => (polishUniversalSegmentsAfterGeneration({
         checkPause,
         onShotProgress: (cur, total, sb) => {
           pipelineCurrentStep.value = `润色全能分镜(${cur}/${total}) #${sb.storyboard_number ?? cur} ${(sb.title || '').slice(0, 16)}`
         },
         onShotError: (sb, msg) =>
           addPipelineError('润色全能分镜', `镜#${sb.storyboard_number ?? sb.id}: ${msg}`),
-      })
-      await loadDrama()
+      })))
+      await pipelineRequest(async () => (loadDrama()))
     }
     // 先拉取分镜图片/视频列表，再批量生成分镜图（并发）
-    await loadStoryboardMedia()
+    await pipelineRequest(async () => (loadStoryboardMedia()))
     const boardsWithoutImg = boards.filter((sb) => needsSbImageGeneration(sb))
     {
       const concurrency = pipelineConcurrency.value
       pipelineCurrentStep.value = `正在生成分镜图（并发${concurrency}）...`
-      const { paused } = await runConcurrently(boardsWithoutImg, concurrency, async (sb) => {
+      const { paused } = await pipelineRequest(async () => (runConcurrently(boardsWithoutImg, concurrency, async (sb) => {
         await checkPause()
         const stepName = '分镜图 #' + (sb.storyboard_number ?? sb.id)
-        const ok = await pipelineWithRetry(stepName, () => generateMissingSbImages(sb, {
+        const ok = await pipelineRequest(async () => (pipelineWithRetry(stepName, () => generateMissingSbImages(sb, {
           targetDramaId: dramaIdVal,
           style,
           poll: pollTaskWithPause,
           beforeGenerate: checkPause,
-        }))
+        }))))
         if (ok && typeof ok === 'object' && ok.paused) return { paused: true }
-      }, { getLabel: (sb) => '分镜图 #' + (sb.storyboard_number ?? sb.id) })
+      }, { getLabel: (sb) => '分镜图 #' + (sb.storyboard_number ?? sb.id) })))
       if (paused) { await waitForResume() }
     }
-    await loadStoryboardMedia()
+    await pipelineRequest(async () => (loadStoryboardMedia()))
     const boards2 = (store.storyboards || []).filter((sb) => {
       const vidList = sbVideos.value[sb.id] || []
       if (vidList.some((v) => v.status === 'completed' && recordHasPlayableVideoUrl(v))) return false
@@ -8155,15 +8251,15 @@ async function runRepairPipeline() {
     {
       const concurrency = pipelineVideoConcurrency.value
       pipelineCurrentStep.value = `正在生成分镜视频（并发${concurrency}）...`
-      const { paused } = await runConcurrently(boards2, concurrency, async (sb) => {
+      const { paused } = await pipelineRequest(async () => (runConcurrently(boards2, concurrency, async (sb) => {
         await checkPause()
         generatingSbVideoIds.add(sb.id)
         try {
           const stepName = '分镜视频 #' + (sb.storyboard_number ?? sb.id)
-          const ok = await pipelineWithRetry(stepName, async () => {
+          const ok = await pipelineRequest(async () => (pipelineWithRetry(stepName, async () => {
             const universal = isSbUniversalMode(sb.id)
             const omniRefs = universal ? collectSbOmniReferenceAbsoluteUrls(sb) : []
-            const firstFrameUrl = await getMainImageUrlForVideo(sb)
+            const firstFrameUrl = await pipelineRequest(async () => (getMainImageUrlForVideo(sb)))
             const absoluteUrl = universal ? (omniRefs[0] || '') : toAbsoluteImageUrl(firstFrameUrl)
             const { first: vFirst, last: vLast } = sbVideoFirstLastUrls(sb, universal, null)
             let refUrls = universal
@@ -8172,7 +8268,7 @@ async function runRepairPipeline() {
             if (!universal && vLast && refUrls && !refUrls.includes(vLast)) {
               refUrls = [...refUrls, vLast]
             }
-            const res = await videosAPI.create({
+            const res = await pipelineRequest(async () => (videosAPI.create({
               drama_id: dramaIdVal,
               storyboard_id: sb.id,
               prompt: buildSbVideoPromptForApi(sb),
@@ -8183,19 +8279,19 @@ async function runRepairPipeline() {
               aspect_ratio: projectAspectRatio.value || '16:9',
               resolution: videoResolution.value || undefined,
               duration: getSbVideoDurationForApi(sb),
-            })
+            })))
             if (res?.task_id) {
               const meta = buildSbGenMeta(sb, GEN_RESOURCE.SB_VIDEO, '分镜视频')
-              const result = await pollTaskWithPause(res.task_id, () => loadSingleStoryboardMedia(sb.id), meta)
+              const result = await pipelineRequest(async () => (pollTaskWithPause(res.task_id, () => loadSingleStoryboardMedia(sb.id), meta)))
               if (result?.paused) return { paused: true }
               if (result?.error) throw new Error(result.error)
-            } else await loadSingleStoryboardMedia(sb.id)
-          })
+            } else await pipelineRequest(async () => (loadSingleStoryboardMedia(sb.id)))
+          })))
           if (ok && typeof ok === 'object' && ok.paused) return { paused: true }
         } finally {
           generatingSbVideoIds.delete(sb.id)
         }
-      }, { getLabel: (sb) => '分镜视频 #' + (sb.storyboard_number ?? sb.id) })
+      }, { getLabel: (sb) => '分镜视频 #' + (sb.storyboard_number ?? sb.id) })))
       if (paused) { await waitForResume() }
     }
 
@@ -8203,22 +8299,24 @@ async function runRepairPipeline() {
     await checkPause()
     pipelineCurrentStep.value = '正在生成整集视频...'
     try {
-      const result = await dramaAPI.finalizeEpisode(episodeId, getFinalizeMergeOptions())
+      const result = await pipelineRequest(async () => (dramaAPI.finalizeEpisode(episodeId, getFinalizeMergeOptions())))
       if (result?.task_id != null) {
-        const pollResult = await pollTaskWithPause(result.task_id, () => loadDrama())
+        const pollResult = await pipelineRequest(async () => (pollTaskWithPause(result.task_id, () => loadDrama())))
         if (pollResult?.paused) { await waitForResume(); return }
         if (pollResult?.error) addPipelineError('生成整集视频', pollResult.error)
-        else await pipelineRest()
+        else await pipelineRequest(async () => (pipelineRest()))
       } else {
         addPipelineError('生成整集视频', result?.message || '本集没有可合成的视频片段')
       }
     } catch (e) {
+      if (e?.pipelineAborted) return
       addPipelineError('生成整集视频', e.message || String(e))
     }
 
     pipelineCurrentStep.value = '补全并生成流程已执行完成'
     ElMessage.success('修复缺失流程已执行完成')
   } catch (e) {
+      if (e?.pipelineAborted) return
     addPipelineError('流程', e.message || String(e))
   }
 }
@@ -8236,23 +8334,50 @@ function onAgentChanged(event) {
 window.addEventListener('lmd-agent-changed', onAgentChanged)
 
 onBeforeUnmount(() => {
+  pageActive = false
+  routeEpoch++
+  loadRequest++
+  pipelineAbortRequested.value = true
+  pipelinePaused.value = false
+  if (pipelineResolveResume) { pipelineResolveResume(); pipelineResolveResume = null }
+  batchVideoStopping.value = true
   batchImageStopping.value = true
   window.removeEventListener('lmd-agent-changed', onAgentChanged)
   agentContext.clear()
 })
 
-function applyRouteToStore() {
+async function applyRouteToStore() {
+  const epoch = ++routeEpoch
+  loadRequest++
+  episodeEpoch++
+  if (pipelineRunning.value) {
+    pipelineAbortRequested.value = true
+    pipelinePaused.value = false
+    if (pipelineResolveResume) { pipelineResolveResume(); pipelineResolveResume = null }
+  }
+  applyingRoute.value = true
   const id = route.params.id
   if (id && id !== 'new') {
-    store.setDrama({ id: Number(id) })
-    if (route.query.episode) {
-      selectedEpisodeId.value = Number(route.query.episode)
+    if (Number(store.dramaId) !== Number(id)) {
+      newProjectTitle.value = ''
+      newProjectBackground.value = ''
+      newEpisodeSource.value = ''
+      newEpisodeTitle.value = ''
+      newEpisodePremise.value = ''
+      newEpisodeScript.value = ''
+      store.reset()
+      store.setDrama({ id: Number(id) })
     }
-    loadDrama()
+    selectedEpisodeId.value = route.query.episode ? Number(route.query.episode) : null
+    await loadDrama()
   } else {
     store.reset()
-    storyInput.value = ''
-    scriptTitle.value = ''
+    newProjectTitle.value = ''
+    newProjectBackground.value = ''
+    newEpisodeSource.value = ''
+    newEpisodeTitle.value = ''
+    newEpisodePremise.value = ''
+    newEpisodeScript.value = ''
     selectedEpisodeId.value = null
     savedCurrentEpisodeNumber.value = 1
     storyStyle.value = ''
@@ -8262,49 +8387,30 @@ function applyRouteToStore() {
     generationStyle.value = ''
     customStylePrompt.value = ''
   }
+  if (!pageActive || epoch !== routeEpoch) return
+  applyingRoute.value = false
+  syncEpisodeQuery()
 }
 
-onMounted(async () => {
-  loadPipelineConcurrency()
-  applyRouteToStore()
+function syncEpisodeQuery() {
+  if (!pageActive || applyingRoute.value || !dramaId.value || Number(route.params.id) !== Number(dramaId.value)) return
+  const desired = selectedEpisodeId.value == null ? null : String(selectedEpisodeId.value)
+  if ((route.query.episode ?? null) === desired) return
+  const query = { ...route.query }
+  if (desired) query.episode = desired
+  else delete query.episode
+  router.replace({ query }).catch(() => {})
+}
+
+onMounted(() => { loadPipelineConcurrency(); applyRouteToStore() })
+watch(() => route.params.id, applyRouteToStore)
+watch(() => selectedEpisodeId.value, syncEpisodeQuery, { flush: 'post' })
+watch(() => route.query.episode, (id) => {
+  if (applyingRoute.value || !isProjectActive(dramaId.value)) return
+  const target = id == null ? store.drama?.episodes?.[0]?.id : Number(id)
+  if (Number(selectedEpisodeId.value) !== Number(target)) onEpisodeSelect(target)
 })
 
-watch(() => route.params.id, () => {
-  applyRouteToStore()
-})
-
-// 剧本分集切换时同步 URL query 参数（?episode=<episode_id>），使刷新/分享页面仍保持当前选中集
-// 同时监听 query 变化，支持浏览器前进/后退时自动切换对应集次
-watch(
-  () => selectedEpisodeId.value,
-  (newId) => {
-    if (!dramaId.value) return
-    const currentInQuery = route.query.episode != null ? Number(route.query.episode) : null
-    const desired = newId != null ? Number(newId) : null
-    if (currentInQuery !== desired) {
-      const newQuery = { ...route.query }
-      if (desired != null) {
-        newQuery.episode = String(desired)
-      } else {
-        delete newQuery.episode
-      }
-      router.replace({ query: newQuery }).catch(() => {})
-    }
-  },
-  { flush: 'post' }
-)
-
-watch(
-  () => route.query.episode,
-  (newEp) => {
-    if (!dramaId.value) return
-    const newVal = newEp != null ? Number(newEp) : null
-    const currentSel = selectedEpisodeId.value != null ? Number(selectedEpisodeId.value) : null
-    if (currentSel !== newVal) {
-      onEpisodeSelect(newVal)
-    }
-  }
-)
 </script>
 
 <style scoped>

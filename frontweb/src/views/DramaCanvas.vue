@@ -44,6 +44,7 @@
             <el-icon><Plus /></el-icon>
             集
           </el-button>
+          <el-button v-if="filterEpisodeId" size="small" type="danger" plain :loading="deletingEpisode" @click="deleteEpisode">删除本集</el-button>
           <el-button size="small" :loading="aligningNodes" @click="onAlignNodes">
             <el-icon><Grid /></el-icon>
             对齐节点
@@ -282,6 +283,8 @@ import '@vue-flow/controls/dist/style.css'
 import '@vue-flow/minimap/dist/style.css'
 
 import { dramaAPI } from '@/api/drama'
+import { useFilmStore } from '@/stores/film'
+import { createCanvasOperationGuard, parseEpisodeQuery, resolveCanvasEpisodeId } from '@/utils/canvasEpisodeScope'
 import { useTheme } from '@/composables/useTheme'
 import { runWorkflowGroup } from '@/composables/useCanvasWorkflowRunner'
 import { CANVAS_CONTEXT_KEY } from '@/composables/useCanvasContext'
@@ -330,7 +333,13 @@ import EpisodeTaskCenter from '@/components/EpisodeTaskCenter.vue'
 const route = useRoute()
 const router = useRouter()
 const { isDark, toggle: toggleTheme } = useTheme()
-const { imagesBySbId, videosBySbId, loadForDrama } = useCanvasStoryboardMedia()
+const film = useFilmStore()
+const imagesBySbId = ref({})
+const videosBySbId = ref({})
+let dramaLoadVersion = 0
+let layoutSaveVersion = 0
+let mediaLoadVersion = 0
+let applyingEpisodeQuery = false
 
 const loading = ref(false)
 const drama = ref(null)
@@ -378,6 +387,38 @@ const nodeTypes = {
 }
 
 const dramaId = computed(() => Number(route.params.id))
+const pageGuard = createCanvasOperationGuard(() => ({ dramaId: dramaId.value, episodeId: null }))
+const episodeGuard = createCanvasOperationGuard(() => ({ dramaId: dramaId.value, episodeId: filterEpisodeId.value }))
+
+async function loadForDrama(data, episodeId = null) {
+  if (!data || Number(data.id) !== dramaId.value) return false
+  const scope = pageGuard.capture()
+  const version = ++mediaLoadVersion
+  // Each request stages media separately so stale responses never mutate the visible maps.
+  const media = useCanvasStoryboardMedia()
+  await media.loadForDrama(data, episodeId)
+  if (!scope.isActive() || version !== mediaLoadVersion || episodeId !== filterEpisodeId.value) return false
+  imagesBySbId.value = media.imagesBySbId.value
+  videosBySbId.value = media.videosBySbId.value
+  return true
+}
+
+function syncEpisodeFromQuery() {
+  const value = route.query.episode
+  const id = drama.value?.id === dramaId.value
+    ? resolveCanvasEpisodeId(value, drama.value.episodes)
+    : parseEpisodeQuery(value)
+  applyingEpisodeQuery = true
+  filterEpisodeId.value = id
+  applyingEpisodeQuery = false
+  if (value != null && (id == null || String(value) !== String(id))) {
+    const query = { ...route.query }
+    if (id == null) delete query.episode
+    else query.episode = String(id)
+    router.replace({ query }).catch(() => {})
+  }
+}
+
 const savedLayout = computed(() => layoutCache.value || parseCanvasLayout(drama.value?.metadata))
 
 const initialViewport = computed(() => {
@@ -441,11 +482,10 @@ function setHighlightAsset(assetNodeId) {
 }
 
 async function refreshDrama(preserveFocus = true) {
+  const scope = episodeGuard.capture()
   const keepId = preserveFocus ? focusedNodeId.value : null
-  await loadDrama(true)
-  await loadForDrama(drama.value, filterEpisodeId.value)
-  rebuildGraph()
-  if (keepId) focusedNodeId.value = keepId
+  const loaded = await loadDrama(true)
+  if (loaded && scope.isActive() && keepId && nodes.value.some((node) => node.id === keepId)) focusedNodeId.value = keepId
 }
 
 async function refreshCanvas(preserveFocus = true) {
@@ -494,10 +534,11 @@ function onContextMenuSelect(type) {
 }
 
 async function onCreateSubmit(form) {
+  const scope = episodeGuard.capture()
   try {
     await submitCreate(form)
   } catch (e) {
-    ElMessage.error(e?.message || '创建失败')
+    if (scope.isActive()) ElMessage.error(e?.message || '创建失败')
   }
 }
 
@@ -559,7 +600,9 @@ function scheduleLayoutSave() {
 }
 
 async function persistCanvasState({ layoutOnly = false, groupsOnly = false } = {}) {
-  if (!dramaId.value) return
+  if (!dramaId.value || drama.value?.id !== dramaId.value) return
+  const scope = pageGuard.capture()
+  const version = ++layoutSaveVersion
 
   let layoutPayload = null
   if (!groupsOnly) {
@@ -570,36 +613,13 @@ async function persistCanvasState({ layoutOnly = false, groupsOnly = false } = {
 
   layoutSaveState.value = 'saving'
   try {
-    const updated = await dramaAPI.saveCanvasLayout(dramaId.value, layoutPayload, groupsPayload)
+    const updated = await dramaAPI.saveCanvasLayout(scope.dramaId, layoutPayload, groupsPayload)
+    if (!scope.isActive() || version !== layoutSaveVersion) return
     const meta = parseDramaMetadata(updated.metadata)
     if (meta.canvas_layout) layoutCache.value = meta.canvas_layout
     if (meta.workflow_groups) workflowGroups.value = meta.workflow_groups
-    // 仅合并 metadata / 时间戳，勿用精简对象覆盖 episodes、characters 等完整数据
-    if (drama.value && updated) {
-      drama.value = {
-        ...drama.value,
-        metadata: updated.metadata,
-        updated_at: updated.updated_at,
-        title: updated.title ?? drama.value.title,
-        style: updated.style ?? drama.value.style,
-        genre: updated.genre ?? drama.value.genre,
-        description: updated.description ?? drama.value.description,
-      }
-      if (Array.isArray(updated.episodes) && updated.episodes.length) {
-        drama.value.episodes = updated.episodes
-      }
-      if (Array.isArray(updated.characters)) {
-        drama.value.characters = updated.characters
-      }
-      if (Array.isArray(updated.scenes)) {
-        drama.value.scenes = updated.scenes
-      }
-      if (Array.isArray(updated.props)) {
-        drama.value.props = updated.props
-      }
-    } else if (updated) {
-      drama.value = updated
-    }
+    // A layout acknowledgement must not replace a newer episode/resource snapshot.
+    drama.value = { ...drama.value, metadata: updated.metadata, updated_at: updated.updated_at }
     layoutSaveState.value = 'saved'
     layoutDirty.value = false
     if (savedHintTimer) clearTimeout(savedHintTimer)
@@ -607,6 +627,7 @@ async function persistCanvasState({ layoutOnly = false, groupsOnly = false } = {
       if (layoutSaveState.value === 'saved') layoutSaveState.value = 'idle'
     }, 2000)
   } catch (e) {
+    if (!scope.isActive() || version !== layoutSaveVersion) return
     layoutSaveState.value = 'error'
     ElMessage.error(e?.message || '保存失败')
   }
@@ -618,8 +639,11 @@ const {
   pendingFlowPosition,
   openCreateDialog,
   submitCreate,
+  deleteEpisode,
+  deletingEpisode,
 } = useCanvasCrud({
   drama,
+  dramaId,
   filterEpisodeId,
   layoutCache,
   focusedNodeId,
@@ -635,6 +659,8 @@ const {
   batchGenerateVideos,
 } = useCanvasEpisodeGenerate({
   drama,
+  dramaId,
+  saveScript: (...args) => scriptActionsHolder.saveScript(...args),
   filterEpisodeId,
   imagesBySbId,
   videosBySbId,
@@ -647,6 +673,7 @@ Object.assign(
   useCanvasScript({
     drama,
     dramaId,
+    filterEpisodeId,
     refreshCanvas: refreshDrama,
     nodeStatus,
   })
@@ -668,6 +695,7 @@ function focusScriptNode() {
 
 async function onAlignNodes() {
   if (!drama.value || !nodes.value.length || aligningNodes.value) return
+  const scope = episodeGuard.capture()
   aligningNodes.value = true
   focusedNodeId.value = null
   try {
@@ -687,6 +715,7 @@ async function onAlignNodes() {
       viewport: layoutCache.value?.viewport,
     }
     await nextTick()
+    if (!scope.isActive()) return
     const flowApi = canvasFlowApi.value
     if (flowApi?.fitView) {
       await flowApi.fitView({
@@ -695,40 +724,51 @@ async function onAlignNodes() {
         includeHiddenNodes: false,
       })
       await new Promise((r) => setTimeout(r, 400))
+      if (!scope.isActive()) return
       const vp = flowApi.getViewport?.()
       if (vp) {
         currentViewport.value = { x: vp.x, y: vp.y, zoom: vp.zoom }
       }
     }
+    if (!scope.isActive()) return
     await persistCanvasState({ layoutOnly: true })
-    ElMessage.success('节点已按规则对齐并适配当前视图')
+    if (scope.isActive()) ElMessage.success('节点已按规则对齐并适配当前视图')
   } catch (e) {
-    ElMessage.error(e?.message || '对齐失败')
+    if (scope.isActive()) ElMessage.error(e?.message || '对齐失败')
   } finally {
-    aligningNodes.value = false
+    if (scope.isActive()) aligningNodes.value = false
   }
 }
 
 async function loadDrama(silent = false) {
-  if (!dramaId.value) return
+  if (!dramaId.value) return false
+  const scope = pageGuard.capture()
+  const version = ++dramaLoadVersion
   if (!silent) loading.value = true
   try {
-    drama.value = await dramaAPI.get(dramaId.value)
-    layoutCache.value = parseCanvasLayout(drama.value.metadata)
+    const data = await dramaAPI.get(scope.dramaId)
+    if (!scope.isActive() || version !== dramaLoadVersion) return false
+    drama.value = data
+    for (const ep of data.episodes || []) film.hydrateEpisodeDraft(scope.dramaId, ep)
+    if (!layoutDirty.value) layoutCache.value = parseCanvasLayout(data.metadata)
     syncWorkflowFromDrama()
-    const vp = resolveViewport(layoutCache.value)
-    currentViewport.value = vp
-    if (route.query.episode) filterEpisodeId.value = Number(route.query.episode)
-    await loadForDrama(drama.value, filterEpisodeId.value)
+    if (!silent) currentViewport.value = resolveViewport(layoutCache.value)
+    syncEpisodeFromQuery()
     rebuildGraph()
+    const mediaLoaded = await loadForDrama(data, filterEpisodeId.value)
+    if (!scope.isActive() || version !== dramaLoadVersion) return false
+    if (mediaLoaded) rebuildGraph()
+    return true
   } catch (e) {
-    if (!silent) ElMessage.error(e?.message || '加载项目失败')
+    if (scope.isActive() && version === dramaLoadVersion && !silent) ElMessage.error(e?.message || '加载项目失败')
+    return false
   } finally {
-    if (!silent) loading.value = false
+    if (scope.isActive() && version === dramaLoadVersion) loading.value = false
   }
 }
 
 async function onCreateWorkflowGroup() {
+  const scope = episodeGuard.capture()
   if (!selectedStoryboardIds.value.length) {
     ElMessage.warning('请先框选或 Ctrl 点击选择分镜节点')
     return
@@ -739,6 +779,7 @@ async function onCreateWorkflowGroup() {
       cancelButtonText: '取消',
       inputValue: `工作流 ${workflowGroups.value.length + 1}`,
     })
+    if (!scope.isActive()) return
     workflowGroups.value = createWorkflowGroup(workflowGroups.value, {
       title: value?.trim() || undefined,
       storyboardIds: selectedStoryboardIds.value,
@@ -746,24 +787,31 @@ async function onCreateWorkflowGroup() {
     })
     activeGroupId.value = workflowGroups.value[workflowGroups.value.length - 1]?.id || null
     await persistCanvasState({ groupsOnly: true })
+    if (!scope.isActive()) return
     rebuildGraph()
     ElMessage.success('工作流已创建')
   } catch (_) {}
 }
 
 async function onDeleteActiveGroup() {
+  const scope = episodeGuard.capture()
   if (!activeGroupId.value) return
   try {
     await ElMessageBox.confirm('确定删除该工作流？', '删除工作流', { type: 'warning' })
+    if (!scope.isActive()) return
     workflowGroups.value = deleteWorkflowGroup(workflowGroups.value, activeGroupId.value)
     activeGroupId.value = workflowGroups.value[0]?.id || null
     await persistCanvasState({ groupsOnly: true })
+    if (!scope.isActive()) return
     rebuildGraph()
     ElMessage.success('已删除')
   } catch (_) {}
 }
 
 async function onRunActiveGroup() {
+  const scope = episodeGuard.capture()
+  const capturedDrama = drama.value
+  const generationOptions = getCanvasGenerationOptions()
   const group = workflowGroups.value.find((g) => g.id === activeGroupId.value)
   if (!group) {
     ElMessage.warning('请先选择工作流')
@@ -779,39 +827,46 @@ async function onRunActiveGroup() {
     return
   }
 
+  if (!scope.isActive()) return
   workflowRunning.value = true
   workflowProgress.value = '准备执行…'
   try {
-    const summary = await runWorkflowGroup(drama.value, {
+    const summary = await runWorkflowGroup(capturedDrama, {
       ...group,
       pipeline: normalizePipeline(group.pipeline?.length ? group.pipeline : pipelineSteps.value),
     }, {
       stopOnError: true,
-      generationOptions: getCanvasGenerationOptions(),
+      generationOptions,
       reloadStoryboard: async (storyboardId) => {
+        if (!scope.isActive()) throw new Error('画布上下文已切换')
         await loadDrama(true)
+        if (!scope.isActive()) throw new Error('画布上下文已切换')
         return findStoryboardInDrama(drama.value, storyboardId)?.storyboard
       },
       onStepStart: ({ storyboardId, step }) => {
+        if (!scope.isActive()) throw new Error('画布上下文已切换')
         workflowProgress.value = `分镜 #${storyboardId}：${step === 'image' ? '生图' : step === 'video' ? '生视频' : '配音'}…`
       },
       onStoryboardError: ({ storyboardId, error }) => {
+        if (!scope.isActive()) return
         ElMessage.error(`分镜 #${storyboardId} 失败：${error?.message || error}`)
       },
     })
+    if (!scope.isActive()) return
     await loadDrama(true)
-    await loadForDrama(drama.value, filterEpisodeId.value)
-    rebuildGraph()
+    if (!scope.isActive()) return
     if (summary.failed.length) {
       ElMessage.warning(`完成 ${summary.ok.length} 镜，失败 ${summary.failed.length} 镜`)
     } else {
       ElMessage.success(`工作流执行完成，共 ${summary.ok.length} 镜`)
     }
   } catch (e) {
-    ElMessage.error(e?.message || '工作流执行失败')
+    if (scope.isActive()) ElMessage.error(e?.message || '工作流执行失败')
   } finally {
-    workflowRunning.value = false
-    workflowProgress.value = ''
+    if (scope.isActive()) {
+      workflowRunning.value = false
+      workflowProgress.value = ''
+    }
   }
 }
 
@@ -893,22 +948,55 @@ function onNodeClick({ node, event }) {
 }
 
 watch(filterEpisodeId, async (val) => {
-  if (drama.value) await loadForDrama(drama.value, val)
+  episodeGuard.invalidate()
+  workflowRunning.value = false
+  workflowProgress.value = ''
+  aligningNodes.value = false
+  mediaLoadVersion++
+  focusedNodeId.value = null
+  selectedStoryboardIds.value = []
+  imagesBySbId.value = {}
+  videosBySbId.value = {}
+  if (!applyingEpisodeQuery && parseEpisodeQuery(route.query.episode) !== (val || null)) {
+    const query = { ...route.query }
+    if (val) query.episode = String(val)
+    else delete query.episode
+    router.push({ query }).catch(() => {})
+  }
+  if (drama.value?.id !== dramaId.value) return
   rebuildGraph()
-  const query = { ...route.query }
-  if (val != null) query.episode = String(val)
-  else delete query.episode
-  router.replace({ query }).catch(() => {})
-})
+  if (await loadForDrama(drama.value, val)) rebuildGraph()
+}, { flush: 'sync' })
+
+watch(() => route.query.episode, syncEpisodeFromQuery, { flush: 'sync' })
 
 watch(() => route.params.id, () => {
+  pageGuard.invalidate()
+  episodeGuard.invalidate()
+  workflowRunning.value = false
+  workflowProgress.value = ''
+  aligningNodes.value = false
+  dramaLoadVersion++
+  mediaLoadVersion++
+  stopStatusPoll()
+  if (saveTimer) clearTimeout(saveTimer)
+  if (savedHintTimer) clearTimeout(savedHintTimer)
+  saveTimer = null
+  layoutDirty.value = false
+  layoutSaveState.value = 'idle'
+  drama.value = null
+  nodes.value = []
+  edges.value = []
+  imagesBySbId.value = {}
+  videosBySbId.value = {}
   highlightAssetId.value = null
   layoutCache.value = null
   activeGroupId.value = null
   selectedStoryboardIds.value = []
   focusedNodeId.value = null
+  syncEpisodeFromQuery()
   loadDrama()
-}, { immediate: true })
+}, { immediate: true, flush: 'sync' })
 
 watch(drama, () => startStatusPoll())
 
@@ -931,6 +1019,10 @@ onBeforeUnmount(() => {
   if (paneClickSuppressTimer) clearTimeout(paneClickSuppressTimer)
   stopStatusPoll()
   if (layoutDirty.value) persistCanvasState({ layoutOnly: true })
+  pageGuard.dispose()
+  episodeGuard.dispose()
+  dramaLoadVersion++
+  mediaLoadVersion++
 })
 </script>
 

@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import { taskAPI } from '@/api/task'
 import { imagesAPI } from '@/api/images'
 import { videosAPI } from '@/api/videos'
+import { EPISODE_TASK_TYPES, PROJECT_TASK_TYPES, tasksForResource, taskScopeEpisodeId, episodeStoryCandidate, latestEpisodeStoryCandidate } from '../utils/generationTaskScope.js'
 
 /** 资源类型常量 */
 export const GEN_RESOURCE = {
@@ -19,6 +20,7 @@ export const GEN_RESOURCE = {
   EXTRACT_SCENES: 'extract_scenes',
   GENERATE_STORYBOARD: 'generate_storyboard',
   GENERATE_STORY: 'generate_story',
+  GENERATE_EPISODE_STORY: 'generate_episode_story',
 }
 
 /** 超过此时间仍为 running 且无进展则自动清理（毫秒） */
@@ -30,7 +32,20 @@ const LAST_FRAME_TYPES = new Set(['last', 'storyboard_last', 'tail', 'last_frame
 const FIRST_FRAME_TYPES = new Set(['first', 'storyboard_first', 'head', 'first_frame'])
 
 function taskKey({ dramaId, episodeId, resourceType, resourceId }) {
-  return `${dramaId}:${episodeId}:${resourceType}:${resourceId}`
+  const scopedEpisodeId = resourceType === GEN_RESOURCE.GENERATE_STORY ? 0 : episodeId
+  return `${dramaId}:${scopedEpisodeId}:${resourceType}:${resourceId}`
+}
+
+async function listScopedTasks(resourceId, types) {
+  const lists = await Promise.all(types.map((type) =>
+    taskAPI.listByResource(String(resourceId), { type }).catch(() => [])
+  ))
+  const unique = new Map(tasksForResource(lists.flat(), resourceId, types).map((task) => [task.id, task]))
+  return [...unique.values()]
+}
+
+function callbackIsActive(options) {
+  return !options?.isActive || options.isActive()
 }
 
 function isLastFrameType(frameType) {
@@ -77,6 +92,8 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
   const recoveredTaskIds = ref(new Set())
   /** 用户或系统主动停止轮询的 taskId */
   const cancelledPollTaskIds = ref(new Set())
+  // Recovery refreshes replace the observer instead of retaining callbacks from old pages.
+  const recoveryCallbacks = new Map()
 
   const runningTasks = computed(() => {
     return [...tasks.value.values()].filter((t) => t.status === 'running')
@@ -112,7 +129,8 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
         finishedAt: Date.now(),
       })
       const delay = status === 'failed' ? 8000 : 3000
-      setTimeout(() => _deleteTask(key), delay)
+      const finished = tasks.value.get(key)
+      setTimeout(() => { if (tasks.value.get(key) === finished) _deleteTask(key) }, delay)
     }
   }
 
@@ -121,6 +139,7 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
     if (!key || key.includes('undefined') || key.includes('null')) return key
     _setTask(key, {
       ...meta,
+      episodeId: meta.resourceType === GEN_RESOURCE.GENERATE_STORY ? 0 : meta.episodeId,
       key,
       status: 'running',
       startedAt: Date.now(),
@@ -257,7 +276,10 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
     const key = markRunning({ ...meta, taskId })
 
     if (pollPromises.value.has(taskId)) {
-      return pollPromises.value.get(taskId)
+      return pollPromises.value.get(taskId).then(async (result) => {
+        if (result.status === 'completed' && onDone && callbackIsActive(options)) await onDone({ status: result.status, result: result.result })
+        return result
+      })
     }
 
     const maxAttempts = options.maxAttempts ?? 450
@@ -279,15 +301,15 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
           if (isOrphanedProcessingTask(t)) {
             const errMsg = ORPHAN_TASK_MSG
             markFailed(key, errMsg)
-            if (showErrorToast && options.ElMessage) {
+            if (showErrorToast && options.ElMessage && callbackIsActive(options)) {
               options.ElMessage.warning(errMsg)
             }
             return resolve({ status: 'failed', error: errMsg })
           }
           if (t.status === 'completed') {
-            if (onDone) {
+            if (onDone && callbackIsActive(options)) {
               try {
-                await onDone()
+                await onDone(t)
               } catch (e) {
                 console.warn('[generationTaskStore] onDone failed:', e?.message)
               }
@@ -298,7 +320,7 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
           if (t.status === 'failed') {
             const errMsg = taskFailMessage(t)
             markFailed(key, errMsg)
-            if (showErrorToast && options.ElMessage) {
+            if (showErrorToast && options.ElMessage && callbackIsActive(options)) {
               options.ElMessage.error(errMsg)
             }
             return resolve({ status: 'failed', error: errMsg })
@@ -312,7 +334,7 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
           const timeoutMsg = options.timeoutMessage
             || '生成任务已超时（超过15分钟），请刷新页面查看是否已完成'
           markFailed(key, timeoutMsg)
-          if (showTimeoutToast && options.ElMessage) {
+          if (showTimeoutToast && options.ElMessage && callbackIsActive(options)) {
             options.ElMessage.warning(timeoutMsg)
           }
           resolve({ status: 'timeout', error: timeoutMsg })
@@ -341,8 +363,7 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
     if (!taskId) return null
 
     if (pollPromises.value.has(taskId)) {
-      markRunning({ ...meta, taskId })
-      return pollPromises.value.get(taskId)
+      return pollTask(taskId, meta, onDone, options)
     }
 
     try {
@@ -352,7 +373,7 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
         return { status: 'failed', error: ORPHAN_TASK_MSG }
       }
       if (t.status === 'completed') {
-        if (onDone) await onDone()
+        if (onDone && callbackIsActive(options)) await onDone(t)
         markDone({ ...meta, taskId })
         return { status: 'completed', result: t.result }
       }
@@ -374,18 +395,27 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
 
   async function _recoverAttachTask(taskId, meta, onDone, pollOpts) {
     if (!taskId) return
+    recoveryCallbacks.set(taskId, { onDone, pollOpts })
     if (recoveredTaskIds.value.has(taskId)) {
       try {
         const t = await taskAPI.get(taskId)
-        if (t.status === 'completed') markDone({ ...meta, taskId })
-        else if (t.status === 'failed') markFailed({ ...meta, taskId }, taskFailMessage(t))
+        if (t.status === 'completed') {
+          if (onDone && callbackIsActive(pollOpts)) await onDone(t)
+          markDone({ ...meta, taskId })
+        } else if (t.status === 'failed') markFailed({ ...meta, taskId }, taskFailMessage(t))
         else if (!isActiveTaskStatus(t.status)) markDone({ ...meta, taskId })
         else if (cancelledPollTaskIds.value.has(taskId)) markFailed({ ...meta, taskId }, '任务轮询已停止')
       } catch (_) {}
       return
     }
     recoveredTaskIds.value = new Set([...recoveredTaskIds.value, taskId])
-    const res = await attachPollIfNeeded(taskId, meta, onDone, pollOpts)
+    const notifyLatest = async (remote) => {
+      const observer = recoveryCallbacks.get(taskId)
+      if (observer && callbackIsActive(observer.pollOpts)) await observer.onDone?.(remote)
+    }
+    // The latest observer performs its own lifecycle check; a prior page's guard cannot suppress it.
+    const res = await attachPollIfNeeded(taskId, meta, notifyLatest, { ...pollOpts, isActive: undefined })
+    recoveryCallbacks.delete(taskId)
     if (res?.status === 'failed' || res?.status === 'timeout') {
       markFailed({ ...meta, taskId }, res.error)
     }
@@ -408,6 +438,7 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
       allProps = [],
       allScenes = [],
       callbacks = {},
+      isActive,
       ElMessage,
     } = ctx
 
@@ -421,6 +452,7 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
     }
 
     await reconcileRunningTasks(reconcileAssets)
+    if (isActive && !isActive()) return
 
     const sbIdSet = new Set(storyboards.map((s) => Number(s.id)))
     const charIdSet = new Set(characters.map((c) => Number(c.id)))
@@ -430,7 +462,7 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
       ? `${dramaTitle} · 第${episodeNumber ?? ''}集`
       : `第${episodeNumber ?? episodeId}集`
 
-    const pollOpts = { ElMessage, showErrorToast: false, showTimeoutToast: false }
+    const pollOpts = { ElMessage, isActive, showErrorToast: false, showTimeoutToast: false }
 
     const attachImage = (img) => {
       if (!img || !['pending', 'processing'].includes(img.status)) return
@@ -460,6 +492,11 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
         resourceId = Number(img.scene_id)
         const s = scenes.find((x) => Number(x.id) === resourceId)
         label = `${epLabel} 场景图: ${s?.location || resourceId}`
+      } else if (img.prop_id != null && propIdSet.has(Number(img.prop_id))) {
+        resourceType = GEN_RESOURCE.PROP_IMAGE
+        resourceId = Number(img.prop_id)
+        const p = props.find((x) => Number(x.id) === resourceId)
+        label = `${epLabel} 道具图: ${p?.name || resourceId}`
       } else {
         return
       }
@@ -503,8 +540,9 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
         imagesAPI.list({ drama_id: dramaId, status: 'pending', page_size: 100 }).catch(() => ({ items: [] })),
         imagesAPI.list({ drama_id: dramaId, status: 'processing', page_size: 100 }).catch(() => ({ items: [] })),
         videosAPI.list({ drama_id: dramaId, status: 'processing', page_size: 100 }).catch(() => ({ items: [] })),
-        taskAPI.listByResource(String(episodeId)).catch(() => []),
+        listScopedTasks(episodeId, EPISODE_TASK_TYPES),
       ])
+      if (isActive && !isActive()) return
 
       const seenImg = new Set()
       for (const img of [...(pendingImg.items || []), ...(processingImg.items || [])]) {
@@ -516,6 +554,11 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
 
       for (const vid of processingVid.items || []) {
         attachVideo(vid)
+      }
+
+      const restoredCandidate = latestEpisodeStoryCandidate(episodeTasks, episodeId)
+      if (restoredCandidate && (!isActive || isActive())) {
+        callbacks.onEpisodeStoryCandidate?.({ ...restoredCandidate, dramaId, episodeId })
       }
 
       for (const t of episodeTasks || []) {
@@ -538,6 +581,8 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
           prop_extraction: { resourceType: GEN_RESOURCE.EXTRACT_PROPS, label: `${epLabel} 提取道具` },
           background_extraction: { resourceType: GEN_RESOURCE.EXTRACT_SCENES, label: `${epLabel} 提取场景` },
           storyboard_generation: { resourceType: GEN_RESOURCE.GENERATE_STORYBOARD, label: `${epLabel} AI生成分镜` },
+          character_extraction: { resourceType: GEN_RESOURCE.EXTRACT_CHARACTERS, label: `${epLabel} 提取角色` },
+          episode_story_generation: { resourceType: GEN_RESOURCE.GENERATE_EPISODE_STORY, label: `${epLabel} 生成剧本` },
         }
         const extractCfg = extractTypeMap[t.type]
         if (extractCfg) {
@@ -551,17 +596,22 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
             label: extractCfg.label,
             taskId: t.id,
           }
-          _recoverAttachTask(t.id, meta, () => callbacks.onDramaRefresh?.(), pollOpts)
+          const onDone = t.type === 'episode_story_generation' ? async (remote) => {
+            if (isActive && !isActive()) return
+            const candidate = episodeStoryCandidate({ ...remote, id: t.id, type: t.type })
+            if (candidate) callbacks.onEpisodeStoryCandidate?.({ ...candidate, dramaId, episodeId })
+            if (!isActive || isActive()) await callbacks.onDramaRefresh?.()
+          } : () => callbacks.onDramaRefresh?.()
+          _recoverAttachTask(t.id, meta, onDone, pollOpts)
         }
       }
 
       // 角色提取 task 挂在 dramaId 上，同一 taskId 只恢复一次（避免多集重复显示）
-      const dramaTasks = await taskAPI.listByResource(String(dramaId)).catch(() => [])
+      const dramaTasks = await listScopedTasks(dramaId, PROJECT_TASK_TYPES)
+      if (isActive && !isActive()) return
       for (const t of dramaTasks || []) {
         if (!isActiveTaskStatus(t.status)) continue
         if (t.type !== 'character_generation') continue
-        if (recoveredTaskIds.value.has(t.id)) continue
-        if (pollPromises.value.has(t.id)) continue
         const meta = {
           dramaId,
           episodeId,
@@ -579,11 +629,9 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
       for (const t of dramaTasks || []) {
         if (!isActiveTaskStatus(t.status)) continue
         if (t.type !== 'story_generation') continue
-        if (recoveredTaskIds.value.has(t.id)) continue
-        if (pollPromises.value.has(t.id)) continue
         const meta = {
           dramaId,
-          episodeId,
+          episodeId: taskScopeEpisodeId(t.type, episodeId),
           dramaTitle,
           episodeNumber,
           resourceType: GEN_RESOURCE.GENERATE_STORY,
@@ -595,9 +643,10 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
         break
       }
 
-      const attachResourceTask = (resourceId, resourceType, label) => {
-        return taskAPI.listByResource(String(resourceId)).then((tasks) => {
-          for (const t of tasks || []) {
+      const attachResourceTask = (resourceId, resourceType, types, label) => {
+        return listScopedTasks(resourceId, types).then((tasks) => {
+          if (isActive && !isActive()) return
+          for (const t of tasks) {
             if (!isActiveTaskStatus(t.status)) continue
             const meta = {
               dramaId,
@@ -617,16 +666,14 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
       await Promise.all([
         ...[...charIdSet].map((id) => {
           const c = characters.find((x) => Number(x.id) === Number(id))
-          return attachResourceTask(id, GEN_RESOURCE.CHAR_IMAGE, `${epLabel} 角色图: ${c?.name || id}`)
+          return attachResourceTask(id, GEN_RESOURCE.CHAR_IMAGE, ['character_image'], `${epLabel} 角色图: ${c?.name || id}`)
         }),
         ...[...propIdSet].map((id) => {
           const p = props.find((x) => Number(x.id) === Number(id))
-          return attachResourceTask(id, GEN_RESOURCE.PROP_IMAGE, `${epLabel} 道具图: ${p?.name || id}`)
+          return attachResourceTask(id, GEN_RESOURCE.PROP_IMAGE, ['prop_image_generation'], `${epLabel} 道具图: ${p?.name || id}`)
         }),
-        ...[...sceneIdSet].map((id) => {
-          const s = scenes.find((x) => Number(x.id) === Number(id))
-          return attachResourceTask(id, GEN_RESOURCE.SCENE_IMAGE, `${epLabel} 场景图: ${s?.location || id}`)
-        }),
+        // Generic image_generation tasks are recovered through image records above.
+        // An unqualified numeric scene/character ID cannot identify their namespace.
       ])
 
       await reconcileRunningTasks(reconcileAssets)

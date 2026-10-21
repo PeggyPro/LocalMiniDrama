@@ -7,7 +7,7 @@ export const taskAPI = {
   cancel(taskId, body) {
     return request.post(`/tasks/${taskId}/cancel`, body || {})
   },
-  listByResource(resourceId) {
-    return request.get('/tasks', { params: { resource_id: String(resourceId) } })
+  listByResource(resourceId, options = {}) {
+    return request.get('/tasks', { params: { ...options, resource_id: String(resourceId) } })
   },
 }

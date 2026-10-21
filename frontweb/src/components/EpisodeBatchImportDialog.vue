@@ -1,24 +1,34 @@
 <template>
   <div class="episode-batch-import-trigger">
-    <el-button size="small" @click="openDialog">
+    <el-button size="small" :disabled="disabled || importing" @click="openDialog">
       <el-icon><Upload /></el-icon>批量导入剧集
     </el-button>
 
     <el-dialog
       v-model="visible"
-      title="批量导入剧集"
+      title="批量追加导入剧集"
       width="920px"
       append-to-body
       destroy-on-close
+      :close-on-click-modal="!importing"
+      :close-on-press-escape="!importing"
+      :show-close="!importing"
       @close="resetState"
     >
-      <div class="batch-import-dialog">
+      <el-alert
+        title="追加导入：仅新增预览中的分集，保留已有分集及其制作资源。"
+        type="info"
+        :closable="false"
+        show-icon
+      />
+      <el-alert v-if="importError" :title="importError" type="error" :closable="false" show-icon />
+      <div class="batch-import-dialog" v-loading="importing" element-loading-text="正在保存导入分集…">
         <el-tabs v-model="activeTab" class="batch-import-tabs">
           <el-tab-pane label="1. 导入设置" name="config">
             <div class="batch-import-panel">
               <div class="batch-import-toolbar">
-                <input ref="fileInputRef" type="file" accept=".txt,text/plain" style="display:none" @change="onFileChange" />
-                <el-button @click="fileInputRef?.click()">
+                <input ref="fileInputRef" type="file" accept=".txt,text/plain" style="display:none" :disabled="importing" @change="onFileChange" />
+                <el-button :disabled="importing" @click="fileInputRef?.click()">
                   <el-icon><Upload /></el-icon>选择 TXT 文件
                 </el-button>
                 <span class="batch-import-file" :class="{ 'is-empty': !fileName }">
@@ -26,7 +36,16 @@
                 </span>
               </div>
 
-              <el-form label-width="120px" class="batch-import-form">
+              <el-form label-width="120px" class="batch-import-form" :disabled="importing">
+                <el-form-item label="内容类型">
+                  <el-radio-group v-model="importKind">
+                    <el-radio label="source">本集原文</el-radio>
+                    <el-radio label="script">已有剧本</el-radio>
+                  </el-radio-group>
+                </el-form-item>
+                <el-form-item label="导入正文">
+                  <el-input v-model="rawText" type="textarea" :rows="8" placeholder="粘贴包含章节标题的完整原文或剧本，也可选择 TXT 文件载入" @input="onTextInput" />
+                </el-form-item>
                 <el-form-item label="章节正则">
                   <el-input v-model="chapterPattern" placeholder="例如：^\s*(第\d+章[^\n]*)" />
                 </el-form-item>
@@ -36,7 +55,8 @@
               </el-form>
 
               <div class="batch-import-tip-block">
-                <div class="batch-import-tip">将提前准备好的小说原文或者剧本内容的.txt文件导入系统</div>
+                <div class="batch-import-tip">默认作为“本集原文”保存，导入后进入各集填写创作要求并生成剧本；选择“已有剧本”则直接保存为剧本。</div>
+                <div class="batch-import-tip">只写入选定类型的完整正文，不自动填充另一类正文或创作要求。</div>
                 <div class="batch-import-tip">请正确输入用于匹配章节标题的正则表达式。</div>
                 <div class="batch-import-tip">示例：<code class="batch-import-code">^\s*(第\d+章[^\n]*)</code>、<code class="batch-import-code">^\s*(第\d+集[^\n]*)</code></div>
                 <div class="batch-import-tip">点击“确认导入配置”后，会先解析章节并切换到预览页。</div>
@@ -48,7 +68,8 @@
             <div class="batch-import-panel">
               <template v-if="previewEpisodes.length">
                 <div class="batch-import-preview-header">
-                  <span>共识别 {{ previewChapters.length }} 章，预计导入 {{ previewEpisodes.length }} 集</span>
+                  <el-tag>{{ previewImportKind === 'source' ? '本集原文' : '已有剧本' }}</el-tag>
+                  <span>共识别 {{ previewChapters.length }} 章，将作为{{ previewImportKind === 'source' ? '本集原文' : '已有剧本' }}追加 {{ previewEpisodes.length }} 集（第 {{ previewEpisodes[0].episode_number }}–{{ previewEpisodes[previewEpisodes.length - 1].episode_number }} 集）</span>
                 </div>
                 <el-table :data="previewEpisodes" border stripe height="420" class="batch-import-preview-table">
                   <el-table-column prop="episode_number" label="集数" width="80" align="center" />
@@ -73,39 +94,46 @@
         </el-tabs>
       </div>
       <template #footer>
-        <el-button @click="visible = false">取消</el-button>
-        <el-button v-if="activeTab === 'preview'" @click="activeTab = 'config'">上一步</el-button>
+        <el-button :disabled="importing" @click="visible = false">取消</el-button>
+        <el-button v-if="activeTab === 'preview'" :disabled="importing" @click="activeTab = 'config'">上一步</el-button>
         <el-button
           v-if="activeTab === 'config'"
           type="primary"
-          :disabled="!rawText.trim()"
+          :disabled="!rawText.trim() || importing"
           @click="confirmConfig"
         >确认导入配置</el-button>
         <el-button
           v-else
           type="primary"
-          :disabled="!previewEpisodes.length"
+          :disabled="!previewReady || !previewEpisodes.length || importing || disabled"
           :loading="importing"
           @click="confirmImport"
-        >确认导入集数</el-button>
+        >按{{ previewImportKind === 'source' ? '本集原文' : '已有剧本' }}追加 {{ previewEpisodes.length }} 集</el-button>
       </template>
     </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, watch, onBeforeUnmount } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Upload } from '@element-plus/icons-vue'
+import { createEpisodeImportSubmission } from '@/utils/episodeBatchImport'
 
 const props = defineProps({
   startEpisodeNumber: {
     type: Number,
     default: 1,
   },
+  submitImport: {
+    type: Function,
+    required: true,
+  },
+  disabled: {
+    type: Boolean,
+    default: false,
+  },
 })
-
-const emit = defineEmits(['import'])
 
 const visible = ref(false)
 const activeTab = ref('config')
@@ -114,12 +142,45 @@ const importing = ref(false)
 const fileInputRef = ref(null)
 const fileName = ref('')
 const rawText = ref('')
+const importKind = ref('source')
+const previewImportKind = ref('source')
 const chapterPattern = ref('^\\s*(第[0-9０-９零一二三四五六七八九十百千万]+[章回节][^\\n\\r]*)')
 const chaptersPerEpisode = ref(1)
 const previewChapters = ref([])
 const previewEpisodes = ref([])
+const importError = ref('')
+let fileReadVersion = 0
+
+watch([rawText, importKind, chapterPattern, chaptersPerEpisode], invalidatePreview, { flush: 'sync' })
+
+function invalidatePreview() {
+  if (importing.value) return
+  importError.value = ''
+  previewReady.value = false
+  previewChapters.value = []
+  previewEpisodes.value = []
+  activeTab.value = 'config'
+}
+
+const importSubmission = createEpisodeImportSubmission({
+  submitImport: (episodes, options) => props.submitImport(episodes, options),
+  onPendingChange: (pending) => { importing.value = pending },
+  onSuccess: (count) => {
+    ElMessage.success(`已追加导入 ${count} 集`)
+    resetState()
+  },
+  onError: (error) => {
+    importError.value = error?.message || '批量导入失败，请重试'
+  },
+})
+
+onBeforeUnmount(() => {
+  fileReadVersion += 1
+  importSubmission.dispose()
+})
 
 function openDialog() {
+  if (props.disabled || importing.value) return
   visible.value = true
   activeTab.value = 'config'
 }
@@ -129,12 +190,17 @@ defineExpose({
 })
 
 function resetState() {
+  if (importing.value) return
+  fileReadVersion += 1
+  importError.value = ''
   visible.value = false
   activeTab.value = 'config'
   previewReady.value = false
   importing.value = false
   fileName.value = ''
   rawText.value = ''
+  importKind.value = 'source'
+  previewImportKind.value = 'source'
   chapterPattern.value = '^\\s*(第[0-9０-９零一二三四五六七八九十百千万]+[章回节][^\\n\\r]*)'
   chaptersPerEpisode.value = 1
   previewChapters.value = []
@@ -142,18 +208,29 @@ function resetState() {
   if (fileInputRef.value) fileInputRef.value.value = ''
 }
 
+function onTextInput() {
+  fileReadVersion += 1
+  fileName.value = ''
+  if (fileInputRef.value) fileInputRef.value.value = ''
+}
+
 function onFileChange(event) {
   const file = event.target?.files?.[0]
-  if (!file) return
+  if (!file || importing.value) return
+  const readVersion = ++fileReadVersion
   fileName.value = file.name
+  rawText.value = ''
+  importError.value = ''
   previewReady.value = false
   previewChapters.value = []
   previewEpisodes.value = []
   const reader = new FileReader()
   reader.onload = (ev) => {
+    if (readVersion !== fileReadVersion) return
     rawText.value = String(ev.target?.result || '')
   }
   reader.onerror = () => {
+    if (readVersion !== fileReadVersion) return
     ElMessage.error('读取文件失败')
   }
   reader.readAsText(file, 'utf-8')
@@ -215,8 +292,10 @@ function buildEpisodesFromChapters(chapters, sizeValue) {
 }
 
 function confirmConfig() {
+  if (importing.value) return
+  importError.value = ''
   if (!rawText.value.trim()) {
-    ElMessage.warning('请先选择 TXT 文件')
+    ElMessage.warning('请先粘贴正文或选择 TXT 文件')
     return
   }
   try {
@@ -228,38 +307,24 @@ function confirmConfig() {
     }
     previewChapters.value = chapters
     previewEpisodes.value = episodes
+    previewImportKind.value = importKind.value
     previewReady.value = true
     activeTab.value = 'preview'
     ElMessage.success(`已识别 ${chapters.length} 章，可导入 ${episodes.length} 集`)
   } catch (e) {
-    previewReady.value = false
-    previewChapters.value = []
-    previewEpisodes.value = []
+    invalidatePreview()
     ElMessage.error(e.message || '章节预览失败')
   }
 }
 
 async function confirmImport() {
-  if (!previewEpisodes.value.length) {
+  if (importing.value || props.disabled) return
+  if (!previewReady.value || !previewEpisodes.value.length) {
     ElMessage.warning('请先完成预览')
     return
   }
-  importing.value = true
-  try {
-    await emit('import', previewEpisodes.value.map((episode) => ({
-      episode_number: episode.episode_number,
-      title: episode.title,
-      script_content: episode.script_content,
-      description: null,
-      duration: 0,
-    })))
-    ElMessage.success(`已导入 ${previewEpisodes.value.length} 集`)
-    resetState()
-  } catch (e) {
-    ElMessage.error(e.message || '批量导入失败')
-  } finally {
-    importing.value = false
-  }
+  importError.value = ''
+  await importSubmission.submit(previewEpisodes.value, previewImportKind.value)
 }
 </script>
 
