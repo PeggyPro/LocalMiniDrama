@@ -26,6 +26,7 @@
               v-model="scriptTitle"
               class="header-episode-input"
               aria-label="集标题"
+              :disabled="applyingRoute"
               placeholder="自己填写，AI 不会修改"
               title="编辑后点击「保存当前集」保存"
             />
@@ -34,7 +35,7 @@
             class="header-save-episode"
             type="primary"
             :loading="scriptGenerating"
-            :disabled="episodeSubmitBusy || (!!dramaId && (store.drama?.episodes?.length > 0) && !currentEpisodeId)"
+            :disabled="applyingRoute || episodeSubmitBusy || (!!dramaId && !currentEpisodeId && (store.drama?.episodes?.length > 0 || route.query.episode != null))"
             title="保存本集标题、原文、改编要求和剧本"
             @click="onGenerateScript"
           >保存当前集</el-button>
@@ -180,7 +181,7 @@
       </div>
     </nav>
 
-    <main class="main">
+    <main class="main" v-loading="applyingRoute" element-loading-text="正在加载所选分集…">
       <!-- 角色/道具/场景上传图片用，单例放在外层避免 v-for 导致 ref 为数组 -->
       <input
         ref="resourceImageFileInput"
@@ -2840,8 +2841,6 @@ const scriptTitle = computed({
   },
 })
 const selectedEpisodeId = ref(null)
-/** Fallback selection after explicit batch replacement only; normal writes retain episode IDs. */
-const savedCurrentEpisodeNumber = ref(1)
 const scriptLanguage = ref('zh')
 const scriptStoryboardStyle = ref('')
 const scriptGenerating = ref(false)
@@ -4856,6 +4855,17 @@ function syncStoryboardStateFromEpisode(ep) {
   sbUniversalSegmentText.value = nextUniversalSegment
 }
 
+/** The URL carries an episode ID; episode numbers and the previous selection are not fallbacks. */
+function resolveRouteEpisode(episodes = store.drama?.episodes || []) {
+  const requested = route.query.episode
+  if (requested == null) return episodes[0] || null
+  if (Array.isArray(requested)) return null
+  const id = Number(requested)
+  return Number.isSafeInteger(id) && id > 0
+    ? episodes.find((ep) => Number(ep.id) === id) || null
+    : null
+}
+
 function onEpisodeSelect(epId) {
   const ep = (store.drama?.episodes || []).find((e) => Number(e.id) === Number(epId)) || null
   if (Number(store.currentEpisode?.id || 0) !== Number(ep?.id || 0)) {
@@ -4901,10 +4911,12 @@ async function loadDrama() {
     storyboardUseFirstLastFrame.value = !!d.metadata?.storyboard_use_first_last_frame
     lastFrameUseFirstLayoutLock.value = d.metadata?.last_frame_use_first_layout_lock !== false
     if (storyboardUseFirstLastFrame.value && gridMode.value !== 'single') gridMode.value = 'single'
-    const list = d.episodes || []
-    const ep = list.find((e) => Number(e.id) === Number(selectedEpisodeId.value))
-      || list.find((e) => Number(e.episode_number) === Number(savedCurrentEpisodeNumber.value)) || list[0] || null
+    // A query change can occur while this request (or style backfill) is pending.
+    // Resolve from the latest URL instead of restoring a captured or cached selection.
+    const ep = resolveRouteEpisode(d.episodes || [])
     onEpisodeSelect(ep?.id)
+    if (!ep && route.query.episode != null) ElMessage.warning('该分集不存在或已删除，请返回剧集重新选择')
+    if (!applyingRoute.value) syncEpisodeQuery()
   } catch (error) {
     if (isActive()) ElMessage.error(error.message || '加载失败')
   }
@@ -5158,6 +5170,8 @@ function updateStoryboardDialogue(sbId) {
 /** Create an empty production unit, then use only that episode's endpoint. */
 let episodeCreationFlight = null
 function ensureCurrentEpisode() {
+  if (applyingRoute.value) return Promise.reject(new Error('正在加载所选分集，请稍候'))
+  if (route.query?.episode != null && !store.currentEpisode) return Promise.reject(new Error('该分集不存在或已删除，请返回剧集重新选择'))
   if (store.currentEpisode) return Promise.resolve(store.currentEpisode)
   const key = routeEpoch + ':' + String(route.params.id)
   if (episodeCreationFlight?.key === key) return episodeCreationFlight.promise
@@ -5362,6 +5376,14 @@ async function importEpisodeRows(rows, mode, { title = '导入故事', summary =
     const result = await dramaAPI.saveEpisodes(did, payload, { mode, expected_collection_revision: version })
     if (!isActive()) return { scopeChanged: true, committed: true }
     store.setDrama({ ...store.drama, episodes: mergeImportedEpisodeRows(store.drama.episodes || [], result.episodes), episodes_revision: result.episodes_revision })
+    // An explicit replacement may remove the open episode. Navigate deliberately
+    // to the first imported episode instead of allowing a load to choose silently.
+    if (mode === 'replace' && !resolveRouteEpisode() && result.episodes?.[0]) {
+      const firstId = result.episodes[0].id
+      onEpisodeSelect(firstId)
+      await router.replace({ query: { ...route.query, episode: String(firstId) } })
+      if (!isProjectActive(did)) return { scopeChanged: true, committed: true }
+    }
     try { await loadDrama() } catch (error) {
       if (isActive()) ElMessage.warning('文字已导入成功，但刷新失败，请稍后刷新页面；无需重复导入。')
     }
@@ -8368,7 +8390,9 @@ async function applyRouteToStore() {
       store.reset()
       store.setDrama({ id: Number(id) })
     }
-    selectedEpisodeId.value = route.query.episode ? Number(route.query.episode) : null
+    // Pinia survives page changes. Bind the requested cached episode (or clear it)
+    // before awaiting the server, so another episode can never remain editable here.
+    onEpisodeSelect(resolveRouteEpisode()?.id)
     await loadDrama()
   } else {
     store.reset()
@@ -8379,7 +8403,6 @@ async function applyRouteToStore() {
     newEpisodePremise.value = ''
     newEpisodeScript.value = ''
     selectedEpisodeId.value = null
-    savedCurrentEpisodeNumber.value = 1
     storyStyle.value = ''
     storyType.value = ''
     scriptLanguage.value = 'zh'
@@ -8394,22 +8417,21 @@ async function applyRouteToStore() {
 
 function syncEpisodeQuery() {
   if (!pageActive || applyingRoute.value || !dramaId.value || Number(route.params.id) !== Number(dramaId.value)) return
-  const desired = selectedEpisodeId.value == null ? null : String(selectedEpisodeId.value)
-  if ((route.query.episode ?? null) === desired) return
-  const query = { ...route.query }
-  if (desired) query.episode = desired
-  else delete query.episode
-  router.replace({ query }).catch(() => {})
+  // Only fill in a missing selection. An explicit URL must never be rewritten
+  // from the previous page's state or from a delayed response.
+  if (route.query.episode != null || selectedEpisodeId.value == null) return
+  router.replace({ query: { ...route.query, episode: String(selectedEpisodeId.value) } }).catch(() => {})
 }
 
-onMounted(() => { loadPipelineConcurrency(); applyRouteToStore() })
-watch(() => route.params.id, applyRouteToStore)
-watch(() => selectedEpisodeId.value, syncEpisodeQuery, { flush: 'post' })
-watch(() => route.query.episode, (id) => {
-  if (applyingRoute.value || !isProjectActive(dramaId.value)) return
-  const target = id == null ? store.drama?.episodes?.[0]?.id : Number(id)
-  if (Number(selectedEpisodeId.value) !== Number(target)) onEpisodeSelect(target)
-})
+onMounted(loadPipelineConcurrency)
+watch(() => route.params.id, applyRouteToStore, { immediate: true, flush: 'sync' })
+watch(() => route.query.episode, () => {
+  if (!isProjectActive(dramaId.value) || route.params.id === 'new') return
+  const target = resolveRouteEpisode()?.id ?? null
+  if (Number(selectedEpisodeId.value) !== Number(target) || Number(store.currentEpisode?.id ?? null) !== Number(target)) {
+    onEpisodeSelect(target)
+  }
+}, { flush: 'sync' })
 
 </script>
 

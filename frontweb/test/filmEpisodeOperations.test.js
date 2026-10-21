@@ -6,6 +6,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { useFilmStore } from '../src/stores/film.js'
 import { captureEpisodeScope, prepareEpisodeImport } from '../src/utils/episodeOperations.js'
 import { generateEpisodeStory } from '../src/utils/episodeStoryGeneration.js'
+import { mergeImportedEpisodeRows } from '../src/utils/episodeBatchImport.js'
 
 // Execute the actual editor handlers, with network and Vue state supplied by the test.
 const source = readFileSync(new URL('../src/views/FilmCreate.vue', import.meta.url), 'utf8')
@@ -129,7 +130,7 @@ test('first episode creation is single-flight during a slow project request', as
   }
   const route = { params: { id: 'new' } }
   const env = {
-    store, route, routeEpoch: 1, pageActive: true,
+    store, route, routeEpoch: 1, pageActive: true, applyingRoute: ref(false),
     newProjectTitle: ref('全剧'), newProjectBackground: ref('背景'), newEpisodeTitle: ref('第二名称'),
     newEpisodeSource: ref('本集原文'), newEpisodePremise: ref('本集要求'), newEpisodeScript: ref('本集正文'), storyType: ref('drama'), storyStyle: ref('ancient'),
     generationStyle: ref('costume'), projectAspectRatio: ref('16:9'), projectStylePromptMetadata: () => ({}),
@@ -168,9 +169,9 @@ test('opening another empty project clears unbound new-project inputs before its
     applyingRoute: ref(false), pipelineRunning: ref(false),
     newProjectTitle: ref('A项目'), newProjectBackground: ref('A背景'),
     newEpisodeSource: ref('A的原文'), newEpisodeTitle: title, newEpisodePremise: premise, newEpisodeScript: text,
-    selectedEpisodeId: ref(44), isProjectActive: () => true,
+    selectedEpisodeId: ref(44), isProjectActive: () => true, resolveRouteEpisode: () => null,
     loadDrama: async () => { store.setDrama({ id: 30, episodes_revision: 0, episodes: [] }) },
-    syncEpisodeQuery() {}, onEpisodeSelect(id) { store.currentEpisode = store.drama.episodes.find((ep) => ep.id === id) },
+    syncEpisodeQuery() {}, onEpisodeSelect(id) { store.currentEpisode = (store.drama.episodes || []).find((ep) => ep.id === id) || null },
     dramaAPI: { async createEpisode(did, body) { assert.equal(did, 30); createdBody = body; return { id: 300, episode_number: 1, revision: 1, episodes_revision: 1 } } },
   }
   const { applyRouteToStore, ensureCurrentEpisode } = handlers(['applyRouteToStore', 'ensureCurrentEpisode', 'ensureCurrentEpisodeOnce'], env, 'let episodeCreationFlight = null')
@@ -183,6 +184,59 @@ test('opening another empty project clears unbound new-project inputs before its
   assert.equal(createdBody.source_text, '')
   assert.equal(createdBody.description, '')
   assert.equal(createdBody.script_content, '')
+})
+
+test('a pending route load cannot save the previously selected episode', async () => {
+  const { saveScriptToBackend } = handlers(['saveScriptToBackend', 'ensureCurrentEpisode'], {
+    store: { dramaId: 1, currentEpisode: { id: 2 } },
+    route: { params: { id: '1' }, query: { episode: '1' } }, applyingRoute: ref(true),
+    captureCurrentScope: () => () => true,
+    dramaAPI: { updateEpisode() { assert.fail('loading must not patch the old episode') } },
+    ensureCurrentEpisodeOnce() { assert.fail('loading must not create another episode') },
+  })
+  await assert.rejects(saveScriptToBackend('local script'), /正在加载所选分集/)
+})
+
+test('explicit collection replacement deliberately navigates when it removes the open episode', async () => {
+  const route = { params: { id: '1' }, query: { episode: '2', tab: 'script' } }
+  const original = [{ id: 1, episode_number: 1 }, { id: 2, episode_number: 2 }]
+  const store = {
+    dramaId: 1, drama: { id: 1, episodes: original, episodes_revision: 4 }, currentEpisode: original[1],
+    setDrama(project) { this.drama = project },
+  }
+  let navigations = 0
+  let refreshes = 0
+  const { importEpisodeRows } = handlers(['importEpisodeRows', 'resolveRouteEpisode'], {
+    store, route, captureCurrentScope: () => () => true, isProjectActive: () => true,
+    prepareEpisodeImport, mergeImportedEpisodeRows, ElMessage: messages,
+    ElMessageBox: { async confirm() {} },
+    dramaAPI: { async saveEpisodes(did, _payload, options) {
+      assert.equal(did, 1)
+      assert.deepEqual(options, { mode: 'replace', expected_collection_revision: 4 })
+      return { episodes: [{ id: 1, episode_number: 1, script_content: 'new script' }], episodes_revision: 5 }
+    } },
+    onEpisodeSelect(id) { store.currentEpisode = store.drama.episodes.find((ep) => ep.id === id) },
+    router: { async replace({ query }) { navigations++; route.query = query } },
+    async loadDrama() {
+      refreshes++
+      assert.equal(route.query.episode, '1')
+      assert.equal(store.currentEpisode.id, 1)
+    },
+  })
+  const result = await importEpisodeRows([{ script_content: 'new script' }], 'replace')
+  assert.equal(result.committed, true)
+  assert.equal(navigations, 1)
+  assert.equal(refreshes, 1)
+  assert.deepEqual(route.query, { episode: '1', tab: 'script' })
+})
+
+test('an explicit missing episode cannot create an unrelated episode', async () => {
+  const { ensureCurrentEpisode } = handlers(['ensureCurrentEpisode'], {
+    store: { dramaId: 1, currentEpisode: null }, applyingRoute: ref(false),
+    route: { params: { id: '1' }, query: { episode: '999' } },
+    ensureCurrentEpisodeOnce() { assert.fail('a missing explicit selection must not create an episode') },
+  })
+  await assert.rejects(ensureCurrentEpisode(), /分集不存在或已删除/)
 })
 
 test('generation locks the pre-save window against rapid duplicate clicks', async () => {
@@ -394,7 +448,7 @@ test('slow first episode creation in an existing empty project keeps all newer i
     getEpisodeDraft() { return draft }, markEpisodeDraftSaved() {},
   }
   const env = {
-    store, route: { params: { id: '7' } }, routeEpoch: 1, pageActive: true,
+    store, route: { params: { id: '7' } }, routeEpoch: 1, pageActive: true, applyingRoute: ref(false),
     newEpisodeTitle: ref('manual title'), newEpisodeSource: source, newEpisodePremise: instructions, newEpisodeScript: text,
     isProjectActive: () => true, captureCurrentScope: () => () => true,
     onEpisodeSelect(id) { store.currentEpisode = store.drama.episodes.find((ep) => ep.id === id) },
