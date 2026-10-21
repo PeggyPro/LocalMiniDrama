@@ -1,0 +1,105 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { createPinia, setActivePinia } from 'pinia'
+import { useFilmStore } from '../src/stores/film.js'
+
+const ep = (id, text, revision = 1) => ({ id, title: `集${id}`, source_text: `小说原文${id}`, description: `改编要求${id}`, script_content: text, revision })
+const open = (film, did, episodes, selected = 0) => { film.setDrama({ id: did, episodes }); film.setCurrentEpisode(episodes[selected]) }
+function createFilm() { setActivePinia(createPinia()); return useFilmStore() }
+
+test('scriptContent follows per-episode drafts across episode/project switches and reset', () => {
+  const film = createFilm()
+  const episodes = [ep(11, '甲稿'), ep(22, '乙稿')]
+  open(film, 1, episodes)
+  film.scriptContent = '甲的本地修改'
+  const first = film.getEpisodeDraft(1, 11)
+  film.setCurrentEpisode(episodes[1])
+  assert.equal(film.scriptContent, '乙稿')
+  film.setScriptContent('乙的本地修改')
+  open(film, 2, [ep(11, '另一个项目')])
+  film.setScriptContent('另一个项目本地稿')
+  film.reset()
+  assert.equal(film.scriptContent, '')
+  open(film, 1, episodes)
+  assert.equal(film.scriptContent, '甲的本地修改')
+  assert.equal(film.currentEpisodeDraft, first)
+  film.setCurrentEpisode(episodes[1])
+  assert.equal(film.scriptContent, '乙的本地修改')
+  assert.equal(film.getEpisodeDraft(2, 11).scriptContent, '另一个项目本地稿')
+})
+
+test('server polling updates clean drafts, preserves dirty drafts and keeps binding identity', () => {
+  const film = createFilm()
+  open(film, 1, [ep(11, '甲稿'), ep(22, '乙稿')])
+  const dirty = film.getEpisodeDraft(1, 11)
+  const clean = film.getEpisodeDraft(1, 22)
+  film.updateEpisodeDraft(1, 11, { title: '本地标题', sourceText: '本地原文', description: '本地梗概', scriptContent: '本地稿' })
+  film.setDrama({ id: 1, episodes: [ep(11, '甲远端', 2), ep(22, '乙远端', 2)] })
+  film.setCurrentEpisode(film.drama.episodes[0])
+  assert.equal(film.getEpisodeDraft(1, 11), dirty)
+  assert.equal(dirty.scriptContent, '本地稿')
+  assert.equal(dirty.title, '本地标题')
+  assert.equal(dirty.sourceText, '本地原文')
+  assert.equal(dirty.description, '本地梗概')
+  assert.equal(dirty.remoteConflict, true)
+  assert.equal(film.getEpisodeDraft(1, 22), clean)
+  assert.equal(clean.scriptContent, '乙远端')
+  assert.equal(clean.baseRevision, 2)
+})
+
+test('save acknowledgement targets submitted IDs while another episode is selected', () => {
+  const film = createFilm()
+  const episodes = [ep(11, '甲稿'), ep(22, '乙稿')]
+  open(film, 1, episodes)
+  film.setScriptContent('提交稿')
+  const snapshot = film.snapshotEpisodeDraft(1, 11)
+  film.setScriptContent('保存期间继续输入')
+  film.setCurrentEpisode(episodes[1])
+  film.markEpisodeDraftSaved(1, 11, ep(11, '提交稿', 2), snapshot)
+  assert.equal(film.scriptContent, '乙稿')
+  film.setCurrentEpisode(episodes[0])
+  assert.equal(film.scriptContent, '保存期间继续输入')
+  assert.equal(film.currentEpisodeDraft.baseRevision, 2)
+  assert.equal(film.currentEpisodeDraft.dirty, true)
+})
+
+test('explicit conflict choices use the store API and retain the reactive draft object', () => {
+  const film = createFilm()
+  open(film, 1, [ep(11, '甲稿')])
+  const draft = film.currentEpisodeDraft
+  film.setScriptContent('本地')
+  film.hydrateEpisodeDraft(1, ep(11, '远端', 2))
+  film.resolveEpisodeDraftConflict(1, ep(11, '远端', 2), 'local')
+  assert.equal(film.currentEpisodeDraft, draft)
+  assert.equal(draft.scriptContent, '本地')
+  assert.equal(draft.baseRevision, 2)
+  assert.equal(draft.dirty, true)
+  assert.equal(draft.remoteConflict, false)
+  film.resolveEpisodeDraftConflict(1, ep(11, '远端', 2), 'server')
+  assert.equal(draft.scriptContent, '远端')
+  assert.equal(draft.dirty, false)
+})
+
+test('a recreated store restores session drafts before server hydration without clobbering edits', (t) => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const values = new Map()
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { sessionStorage: {
+    getItem: (key) => values.get(key), setItem: (key, value) => values.set(key, value),
+  } } })
+  t.after(() => {
+    if (previous) Object.defineProperty(globalThis, 'window', previous)
+    else delete globalThis.window
+  })
+  const first = createFilm()
+  open(first, 1, [ep(11, '原稿')])
+  first.updateEpisodeDraft(1, 11, { title: '本地标题', sourceText: '本地原文', description: '独立梗概', scriptContent: '未保存草稿' })
+  first.reset()
+  const restored = createFilm()
+  open(restored, 1, [ep(11, '服务器新稿', 3)])
+  assert.equal(restored.scriptContent, '未保存草稿')
+  assert.equal(restored.currentEpisodeDraft.title, '本地标题')
+  assert.equal(restored.currentEpisodeDraft.sourceText, '本地原文')
+  assert.equal(restored.currentEpisodeDraft.description, '独立梗概')
+  assert.equal(restored.currentEpisodeDraft.baseRevision, 1)
+  assert.equal(restored.currentEpisodeDraft.remoteRevision, 3)
+})
