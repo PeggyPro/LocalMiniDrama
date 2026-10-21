@@ -15,6 +15,20 @@
           <el-icon><Grid /></el-icon>
           画布模式
         </el-button>
+        <div class="header-episode-card">
+          <label class="header-episode-label" for="header-episode-title">
+            <span>集标题</span>
+            <span v-if="currentEpisode" class="header-episode-number">第{{ currentEpisode.episode_number }}集</span>
+          </label>
+          <el-input
+            id="header-episode-title"
+            v-model="scriptTitle"
+            class="header-episode-input"
+            aria-label="集标题"
+            placeholder="自己填写，AI 不会修改"
+            title="编辑后点击「保存当前集」保存"
+          />
+        </div>
         <div class="header-actions">
           <EpisodeTaskCenter
             v-if="dramaId && currentEpisodeId"
@@ -255,8 +269,6 @@
                   <AIModelInfoCard scene-key="story_generation" usage="剧本生成" :refresh-key="modelInfoRevision" @open-config="showAiConfigDialog = true" />
                 </div>
                 <div class="row gap" style="margin-bottom: 10px; flex-wrap: wrap;">
-                  <span>集标题</span>
-                  <el-input v-model="scriptTitle" aria-label="集标题" placeholder="自己填写，AI 不会修改" style="width: 230px" />
                   <el-button
                     type="primary"
                     :loading="scriptGenerating"
@@ -8616,6 +8628,51 @@ html.light .logo-sub {
 }
 .btn-back-drama {
   flex-shrink: 0;
+}
+.header-episode-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 1 360px;
+  min-width: 200px;
+  padding: 4px 10px;
+  border: 1px solid var(--el-color-primary-light-5);
+  border-radius: 10px;
+  background: var(--el-color-primary-light-9);
+  box-shadow: 0 2px 8px rgba(139, 92, 246, 0.06);
+}
+.header-episode-card:focus-within {
+  border-color: var(--el-color-primary);
+}
+.header-episode-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex-shrink: 0;
+  color: var(--el-color-primary);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.header-episode-number {
+  color: var(--el-text-color-secondary);
+  font-size: 10px;
+  font-weight: 400;
+}
+.header-episode-input {
+  min-width: 0;
+}
+.header-episode-input :deep(.el-input__wrapper) {
+  padding: 0 4px;
+  background: transparent;
+  box-shadow: none;
+}
+.header-episode-input :deep(.el-input__inner) {
+  font-weight: 600;
+}
+@media (max-width: 1100px) {
+  .header-inner { flex-wrap: wrap; gap: 10px; }
+  .header-episode-card { order: 1; flex: 1 1 100%; }
 }
 .header-actions {
   margin-left: auto;
