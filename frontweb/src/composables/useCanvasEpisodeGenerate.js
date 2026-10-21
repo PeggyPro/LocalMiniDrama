@@ -10,6 +10,7 @@ import { createCanvasOperationGuard } from '@/utils/canvasEpisodeScope'
 import { runImageStep, runVideoStep } from '@/composables/useCanvasWorkflowRunner'
 import { hasStoryboardImage, hasStoryboardVideo } from '@/utils/storyboardMedia'
 import { CANVAS_NODE_STATUS_LABELS } from '@/composables/useCanvasNodeStatus'
+import { getTaskPollOptions } from '@/utils/generationTaskTimeouts'
 
 /** Canvas jobs retain their submitted IDs and stop observing/submitting after navigation. */
 export function useCanvasEpisodeGenerate(deps) {
@@ -64,7 +65,8 @@ export function useCanvasEpisodeGenerate(deps) {
   }
   async function pollTask(taskId, scope) {
     if (!taskId) return { status: 'completed' }
-    for (let i = 0; i < 450; i++) {
+    const { maxAttempts, timeoutMessage } = getTaskPollOptions({ type: 'storyboard_generation' })
+    for (let i = 0; i < maxAttempts; i++) {
       if (!scope.isActive()) return null
       await wait()
       if (!scope.isActive()) return null
@@ -72,7 +74,7 @@ export function useCanvasEpisodeGenerate(deps) {
       try {
         task = await taskAPI.get(taskId)
       } catch (error) {
-        if (i === 449) throw error
+        if (i === maxAttempts - 1) throw error
         continue
       }
       if (!scope.isActive()) return null
@@ -80,7 +82,7 @@ export function useCanvasEpisodeGenerate(deps) {
       if (task.status === 'failed') throw new Error(task.error?.message || task.error || '任务失败')
       await refreshCanvas(true)
     }
-    throw new Error('任务超时')
+    throw new Error(timeoutMessage)
   }
   function storyboardOptions(ep) {
     const meta = parseDramaMetadata(drama.value?.metadata)

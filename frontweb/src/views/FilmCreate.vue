@@ -2702,6 +2702,7 @@ import { propLibraryAPI } from '@/api/propLibrary'
 import { generationSettingsAPI } from '@/api/prompts'
 import { prepareEpisodeImport, captureEpisodeScope } from '@/utils/episodeOperations'
 import { mergeImportedEpisodeRows } from '@/utils/episodeBatchImport'
+import { getTaskPollOptions } from '@/utils/generationTaskTimeouts'
 import { canUseUniversalOmniVideoApi } from '@/utils/videoOmniSupport'
 import { getMissingStoryboardImageSlots, generateMissingStoryboardImages } from '@/utils/storyboardImageGeneration'
 import { exportStoryboardSheet } from '@/utils/exportStoryboardSheet'
@@ -7399,8 +7400,7 @@ function pollTaskWithPause(taskId, onDone, meta = {}) {
   if (trackInStore && taskId) {
     genStore.markRunning({ ...resolvedMeta, taskId })
   }
-  const maxAttempts = 450  // 450 × 2s = 15 分钟
-  const interval = 2000
+  const { maxAttempts, interval, timeoutMessage } = getTaskPollOptions(resolvedMeta)
   let attempts = 0
   return new Promise((resolve, reject) => {
     const finishStore = (status, error) => {
@@ -7443,7 +7443,7 @@ function pollTaskWithPause(taskId, onDone, meta = {}) {
       }
       if (attempts < maxAttempts) setTimeout(tick, interval)
       else {
-        const timeoutMsg = '任务查询超时（超过15分钟）'
+        const timeoutMsg = timeoutMessage
         finishStore('failed', timeoutMsg)
         resolve({ status: 'timeout', error: timeoutMsg })
       }
@@ -7693,7 +7693,8 @@ async function runOneClickPipeline(textOnly = false) {
         })))
         const taskId = res?.task_id ?? (typeof res === 'string' ? res : null)
         if (taskId) {
-          const result = await pipelineRequest(async () => (pollTaskWithPause(taskId, () => loadDrama())))
+          const result = await pipelineRequest(async () => (pollTaskWithPause(taskId, () => loadDrama(),
+            buildExtractTaskMeta(store, dramaIdVal, episodeId, GEN_RESOURCE.GENERATE_STORYBOARD, 'AI生成分镜'))))
           if (result?.paused) { clearInterval(sbRefreshTimer); await waitForResume(); return }
           if (result?.error) {
             // 任务失败，但后端可能已保存了部分分镜，确保最新状态显示出来再停止
@@ -8192,7 +8193,8 @@ async function runRepairPipeline() {
         })))
         const taskId = res?.task_id ?? (typeof res === 'string' ? res : null)
         if (taskId) {
-          const result = await pipelineRequest(async () => (pollTaskWithPause(taskId, () => loadDrama())))
+          const result = await pipelineRequest(async () => (pollTaskWithPause(taskId, () => loadDrama(),
+            buildExtractTaskMeta(store, dramaIdVal, episodeId, GEN_RESOURCE.GENERATE_STORYBOARD, 'AI生成分镜'))))
           if (result?.paused) { await waitForResume(); return }
           if (result?.error) { addPipelineError('分镜生成', result.error); return }
         }

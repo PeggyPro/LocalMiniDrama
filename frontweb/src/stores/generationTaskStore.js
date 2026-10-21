@@ -4,6 +4,7 @@ import { taskAPI } from '@/api/task'
 import { imagesAPI } from '@/api/images'
 import { videosAPI } from '@/api/videos'
 import { EPISODE_TASK_TYPES, PROJECT_TASK_TYPES, tasksForResource, taskScopeEpisodeId, episodeStoryCandidate, latestEpisodeStoryCandidate } from '../utils/generationTaskScope.js'
+import { getTaskTimeouts, getTaskPollOptions } from '../utils/generationTaskTimeouts.js'
 
 /** 资源类型常量 */
 export const GEN_RESOURCE = {
@@ -22,11 +23,6 @@ export const GEN_RESOURCE = {
   GENERATE_STORY: 'generate_story',
   GENERATE_EPISODE_STORY: 'generate_episode_story',
 }
-
-/** 超过此时间仍为 running 且无进展则自动清理（毫秒） */
-const STALE_TASK_MS = 30 * 60 * 1000
-/** 后端任务 updated_at 长时间不变，视为重启后僵尸任务（毫秒） */
-const ORPHAN_PROCESSING_MS = 10 * 60 * 1000
 
 const LAST_FRAME_TYPES = new Set(['last', 'storyboard_last', 'tail', 'last_frame'])
 const FIRST_FRAME_TYPES = new Set(['first', 'storyboard_first', 'head', 'first_frame'])
@@ -68,7 +64,7 @@ function isActiveTaskStatus(status) {
   return status === 'pending' || status === 'processing' || status === 'running'
 }
 
-function isOrphanedProcessingTask(remote, staleMs = ORPHAN_PROCESSING_MS) {
+function isOrphanedProcessingTask(remote, staleMs = getTaskTimeouts(remote).inactivityTimeoutMs) {
   if (!remote || !isActiveTaskStatus(remote.status)) return false
   const updatedAt = remote.updated_at ? new Date(remote.updated_at).getTime() : 0
   if (!updatedAt) return false
@@ -223,7 +219,7 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
     const now = Date.now()
 
     for (const t of running) {
-      if (t.startedAt && now - t.startedAt > STALE_TASK_MS) {
+      if (t.startedAt && now - t.startedAt > getTaskTimeouts(t).staleTimeoutMs) {
         markFailed(t, '任务等待超时，已自动清除（请刷新确认是否已完成）')
         continue
       }
@@ -282,8 +278,7 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
       })
     }
 
-    const maxAttempts = options.maxAttempts ?? 450
-    const interval = options.interval ?? 2000
+    const { maxAttempts, interval, timeoutMessage } = getTaskPollOptions(meta, options)
     const showErrorToast = options.showErrorToast !== false
     const showTimeoutToast = options.showTimeoutToast !== false
 
@@ -331,8 +326,7 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
         if (attempts < maxAttempts) {
           setTimeout(tick, interval)
         } else {
-          const timeoutMsg = options.timeoutMessage
-            || '生成任务已超时（超过15分钟），请刷新页面查看是否已完成'
+          const timeoutMsg = timeoutMessage
           markFailed(key, timeoutMsg)
           if (showTimeoutToast && options.ElMessage && callbackIsActive(options)) {
             options.ElMessage.warning(timeoutMsg)

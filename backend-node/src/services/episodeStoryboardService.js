@@ -12,9 +12,13 @@ const angleService = require('./angleService');
  * 1. 默认携带 max_tokens:16384，让模型输出更长，减少截断续写次数。
  * 2. 若 API 因 max_tokens 超上限报参数错误，由 aiClient 统一降级重试
  *    （有上限值则按上限重试，否则去掉 max_tokens），此处的包装不再需要自己处理。
- * 3. 所有尝试均记录日志。
+ * 3. 分镜长推理专用等待窗口：首次正文前静默 20 分钟，正文开始后静默 10 分钟。
+ *    初次生成、截断续写都使用同一设置，不改变其他文本生成的默认超时。
+ * 4. 所有尝试均记录日志。
  */
 const DEFAULT_STORYBOARD_MAX_TOKENS = 16384;
+const STORYBOARD_FIRST_RESPONSE_TIMEOUT_MS = 20 * 60 * 1000;
+const STORYBOARD_SILENCE_TIMEOUT_MS = 10 * 60 * 1000;
 
 /** 统一镜号（AI 可能返回字符串 "1"，须与 Set 去重键一致） */
 function normalizeStoryboardShotNumber(rawOrSb) {
@@ -56,6 +60,8 @@ async function generateTextForStoryboard(db, log, userPrompt, systemPrompt, opti
     model: model || undefined,
     temperature,
     max_tokens: DEFAULT_STORYBOARD_MAX_TOKENS,
+    first_response_timeout_ms: STORYBOARD_FIRST_RESPONSE_TIMEOUT_MS,
+    silence_timeout_ms: STORYBOARD_SILENCE_TIMEOUT_MS,
     streamCallback,
   });
 }

@@ -267,6 +267,34 @@ describe('episode-local prop extraction', () => {
 });
 
 describe('episode-local storyboard generation', () => {
+  it('allows long reasoning and stream pauses for initial generation and truncated continuation', async (t) => {
+    const db = createDb(t);
+    seedStoryboards(db);
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const requests = [];
+    t.mock.method(aiClient, 'generateText', async (...args) => {
+      requests.push(args[5]);
+      // A complete first item followed by a broken next item exercises real continuation.
+      if (requests.length === 1) return '[{"shot_number":1,"title":"首镜","action":"走进房间"},{"shot_number":2,"action":"';
+      return '[{"shot_number":2,"title":"续写","action":"坐下"}]';
+    });
+    const pending = storyboardService.generateStoryboard(db, log, 1);
+    await new Promise(setImmediate);
+    assert.equal(requests.length, 1);
+    t.mock.timers.tick(3000);
+    await new Promise(setImmediate);
+    const task = taskService.getTask(db, pending.task_id);
+    assert.equal(task.status, 'completed', task.error);
+    assert.equal(requests.length, 2, 'truncated output must actually request continuation');
+    for (const options of requests) {
+      assert.equal(options.scene_key, 'storyboard_extraction');
+      assert.equal(options.first_response_timeout_ms, 20 * 60 * 1000);
+      assert.equal(options.silence_timeout_ms, 10 * 60 * 1000);
+      assert.equal(typeof options.streamCallback, 'function');
+    }
+    assert.equal(JSON.parse(task.result).storyboards.length, 2);
+  });
+
   for (const streaming of [false, true]) {
     it(`scopes prompt, appearances, saved relations and name matching${streaming ? ' during streaming' : ''}`, async (t) => {
       const db = createDb(t);
