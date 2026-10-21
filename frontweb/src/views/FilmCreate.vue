@@ -15,19 +15,29 @@
           <el-icon><Grid /></el-icon>
           画布模式
         </el-button>
-        <div class="header-episode-card">
-          <label class="header-episode-label" for="header-episode-title">
-            <span>集标题</span>
-            <span v-if="currentEpisode" class="header-episode-number">第{{ currentEpisode.episode_number }}集</span>
-          </label>
-          <el-input
-            id="header-episode-title"
-            v-model="scriptTitle"
-            class="header-episode-input"
-            aria-label="集标题"
-            placeholder="自己填写，AI 不会修改"
-            title="编辑后点击「保存当前集」保存"
-          />
+        <div class="header-episode-controls">
+          <div class="header-episode-card">
+            <label class="header-episode-label" for="header-episode-title">
+              <span>集标题</span>
+              <span v-if="currentEpisode" class="header-episode-number">第{{ currentEpisode.episode_number }}集</span>
+            </label>
+            <el-input
+              id="header-episode-title"
+              v-model="scriptTitle"
+              class="header-episode-input"
+              aria-label="集标题"
+              placeholder="自己填写，AI 不会修改"
+              title="编辑后点击「保存当前集」保存"
+            />
+          </div>
+          <el-button
+            class="header-save-episode"
+            type="primary"
+            :loading="scriptGenerating"
+            :disabled="episodeSubmitBusy || (!!dramaId && (store.drama?.episodes?.length > 0) && !currentEpisodeId)"
+            title="保存本集标题、原文、改编要求和剧本"
+            @click="onGenerateScript"
+          >保存当前集</el-button>
         </div>
         <div class="header-actions">
           <EpisodeTaskCenter
@@ -268,16 +278,8 @@
                   <h2 class="section-title">本集剧本 <small v-if="episodeDraft?.dirty" style="font-size: 12px; color: var(--el-color-warning)">未保存草稿</small></h2>
                   <AIModelInfoCard scene-key="story_generation" usage="剧本生成" :refresh-key="modelInfoRevision" @open-config="showAiConfigDialog = true" />
                 </div>
-                <div class="row gap" style="margin-bottom: 10px; flex-wrap: wrap;">
-                  <el-button
-                    type="primary"
-                    :loading="scriptGenerating"
-                    :disabled="episodeSubmitBusy || (!!dramaId && (store.drama?.episodes?.length > 0) && !currentEpisodeId)"
-                    title="保存本集标题、原文、改编要求和剧本"
-                    @click="onGenerateScript"
-                  >保存当前集</el-button>
-                </div>
-                <p class="section-desc">AI 改编后的剧本显示在这里，与上方原文分别保存。可直接编辑；「保存当前集」会同时保存原文、改编要求、标题和剧本。</p>
+
+                <p class="section-desc">AI 改编后的剧本显示在这里，与上方原文分别保存。可直接编辑；点击顶部「保存当前集」可同时保存原文、改编要求、标题和剧本。</p>
                 <el-input
                   v-model="scriptContent"
                   type="textarea"
@@ -8629,12 +8631,22 @@ html.light .logo-sub {
 .btn-back-drama {
   flex-shrink: 0;
 }
+.header-episode-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 0 1 500px;
+  min-width: 0;
+}
+.header-save-episode {
+  flex-shrink: 0;
+}
 .header-episode-card {
   display: flex;
   align-items: center;
   gap: 10px;
-  flex: 0 1 360px;
-  min-width: 200px;
+  flex: 1;
+  min-width: 0;
   padding: 4px 10px;
   border: 1px solid var(--el-color-primary-light-5);
   border-radius: 10px;
@@ -8672,7 +8684,7 @@ html.light .logo-sub {
 }
 @media (max-width: 1100px) {
   .header-inner { flex-wrap: wrap; gap: 10px; }
-  .header-episode-card { order: 1; flex: 1 1 100%; }
+  .header-episode-controls { order: 1; flex: 1 1 100%; }
 }
 .header-actions {
   margin-left: auto;
