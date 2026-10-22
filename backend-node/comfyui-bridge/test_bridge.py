@@ -22,14 +22,16 @@ DATA = "data:image/png;base64," + base64.b64encode(PNG).decode()
 
 def object_info():
     info = {}
-    for model in bridge.MODELS:
+    for model in [*bridge.MODELS, *bridge.IMAGE_MODELS]:
         for node in bridge.load_workflow(model).values():
             schema = info.setdefault(node["class_type"], {"input": {"required": {}}})["input"]["required"]
             if node["class_type"] in {"UNETLoader", "VAELoader", "CLIPLoader", "MiniMaxH3TurboLoRA"}:
                 for key, value in node["inputs"].items():
                     if key.endswith("_name") and isinstance(value, str):
                         schema.setdefault(key, [[]])[0].append(value)
-    info.update({"LoadImage": {"input": {}}, "MiniMaxH3AddGuide": {"input": {}}})
+    info.update({"LoadImage": {"input": {}}, "MiniMaxH3AddGuide": {"input": {}}, "EmptyLatentImage": {"input": {}}})
+    info["TextEncodeQwenImage21"]["input"]["required"]["images"] = ["COMFY_AUTOGROW_V3", {
+        "template": {"names": [f"image_{i}" for i in range(1, 17)], "min": 0}}]
     return info
 
 
@@ -284,6 +286,79 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual((data["width"], data["height"]), (480, 864))
         self.assertEqual(graph["131"]["inputs"]["height"], 864)
 
+    def test_image_references_keep_order_and_first_image_geometry(self):
+        result = self.submit(model=bridge.MODEL_QWEN_REFERENCE, size="1664x928", reference_urls=[DATA] * 5)
+        graph = self.state["prompts"][0]["prompt"]
+        self.assertEqual(len(self.state["uploads"]), 5)
+        for index in range(1, 6):
+            self.assertEqual(graph[f"lmd_image_{index}"]["inputs"]["image"], f"actual/input/server-renamed-{index}.png")
+            self.assertEqual(graph["5"]["inputs"][f"images.image_{index}"], ["10" if index == 1 else f"lmd_image_{index}", 0])
+        self.assertEqual(graph["10"]["inputs"]["image"], ["lmd_image_1", 0])
+        self.assertEqual(graph["7"]["inputs"]["latent_image"], ["5", 2])
+        self.assertEqual(graph["11"]["inputs"]["width"], 1664)
+        self.assertEqual(graph["11"]["inputs"]["height"], 928)
+        self.assertEqual(result["metadata"]["reference_count"], 5)
+        self.assertEqual(result["metadata"]["steps"], 40)
+        self.assertEqual(result["metadata"]["cfg"], 1)
+
+    def test_image_input_schema_boundary_never_silently_discards(self):
+        options = {**self.options, "model": bridge.MODEL_QWEN_REFERENCE, "reference_urls": [DATA] * 16}
+        preview = self.service.submit(options, preview=True)
+        self.assertEqual(preview["reference_count"], 16)
+        self.assertIn("images.image_16", preview["workflow"]["5"]["inputs"])
+        self.assertEqual(self.state["uploads"], [])
+        options["reference_urls"].append(DATA)
+        with self.assertRaisesRegex(bridge.BridgeError, "实际支持 16.*传入 17"):
+            self.service.submit(options)
+        self.assertEqual(self.state["uploads"], [])
+        self.assertEqual(self.state["prompts"], [])
+        # Capacity follows the actual live schema rather than a hardcoded quality cap.
+        self.state["info"]["TextEncodeQwenImage21"]["input"]["required"]["images"][1]["template"]["names"].append("image_17")
+        preview = self.service.submit(options, preview=True)
+        self.assertEqual(preview["reference_count"], 17)
+        self.assertIn("images.image_17", preview["workflow"]["5"]["inputs"])
+
+    def test_image_without_references_uses_requested_aspect_latent(self):
+        result = self.submit(model=bridge.MODEL_QWEN_REFERENCE, size="864x1536")
+        graph = self.state["prompts"][0]["prompt"]
+        self.assertFalse(any(node["class_type"] == "LoadImage" for node in graph.values()))
+        self.assertNotIn("10", graph)
+        self.assertEqual(graph["7"]["inputs"]["latent_image"], ["lmd_empty", 0])
+        self.assertLess(graph["lmd_empty"]["inputs"]["width"], graph["lmd_empty"]["inputs"]["height"])
+        self.assertEqual(result["metadata"]["reference_count"], 0)
+        self.assertEqual(self.state["uploads"], [])
+
+    def test_image_completed_output_and_restart_recovery(self):
+        result = self.submit(model=bridge.MODEL_QWEN_REFERENCE, reference_urls=[DATA, DATA])
+        self.state["history"] = {"native-prompt-id": {"status": {"completed": True}, "outputs": {
+            "9": {"images": [{"filename": "镜头 1.png", "subfolder": "image/lmd sample", "type": "output"}]}}}}
+        restarted = bridge.BridgeService(self.temp.name)
+        output = restarted.poll(result["task_id"])
+        self.assertEqual(output["status"], "completed")
+        self.assertIn("subfolder=image%2Flmd+sample", output["image_url"])
+        self.assertNotIn("video_url", output)
+
+    def test_image_preview_or_execution_error_is_not_success(self):
+        result = self.submit(model=bridge.MODEL_QWEN_REFERENCE)
+        self.state["history"] = {"native-prompt-id": {"status": {"completed": True}, "outputs": {
+            "9": {"images": [{"filename": "preview.png", "type": "temp"}]}}}}
+        self.assertEqual(self.service.poll(result["task_id"])["status"], "failed")
+        result = self.submit(model=bridge.MODEL_QWEN_REFERENCE)
+        self.complete(node="9")
+        self.state["history"]["native-prompt-id"]["status"]["messages"] = [["execution_error", {
+            "node_id": "5", "exception_message": "encoder failed"}]]
+        self.assertIn("encoder failed", self.service.poll(result["task_id"])["error"])
+
+    def test_image_invalid_size_and_missing_dependency_do_not_upload(self):
+        for size in ("bad", "0x1024", "20000x1024"):
+            with self.assertRaises(bridge.BridgeError):
+                self.submit(model=bridge.MODEL_QWEN_REFERENCE, size=size, reference_urls=[DATA])
+        del self.state["info"]["TextEncodeQwenImage21"]
+        with self.assertRaisesRegex(bridge.BridgeError, "TextEncodeQwenImage21"):
+            self.submit(model=bridge.MODEL_QWEN_REFERENCE, reference_urls=[DATA])
+        self.assertEqual(self.state["uploads"], [])
+        self.assertEqual(self.state["prompts"], [])
+
     def test_http_health_auth_and_zero_generation_validation(self):
         server = ThreadingHTTPServer(("127.0.0.1", 0), bridge.handler_for(self.service, "test-secret", 1234))
         worker = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
@@ -312,6 +387,23 @@ class BridgeTests(unittest.TestCase):
             with urlopen(request) as response:
                 self.assertTrue(json.load(response)["valid"])
             self.assertEqual(self.state["prompts"], [])
+            image_options = {**self.options, "model": bridge.MODEL_QWEN_REFERENCE, "reference_urls": [DATA] * 3}
+            request = Request(base + "/image/validate", data=json.dumps(image_options).encode(),
+                              headers={"Content-Type": "application/json", "Authorization": "Bearer test-secret"})
+            with urlopen(request) as response:
+                preview = json.load(response)
+                self.assertTrue(preview["valid"])
+                self.assertEqual(preview["reference_count"], 3)
+            self.assertEqual(self.state["prompts"], [])
+            self.assertEqual(self.state["uploads"], [])
+            request = Request(base + "/image/generations", data=json.dumps(image_options).encode(),
+                              headers={"Content-Type": "application/json", "Authorization": "Bearer test-secret"})
+            with urlopen(request) as response:
+                result = json.load(response)
+            self.assertEqual(result["status"], "processing")
+            request = Request(base + "/image/task/" + result["task_id"], headers={"Authorization": "Bearer test-secret"})
+            with urlopen(request) as response:
+                self.assertEqual(json.load(response)["status"], "processing")
         finally:
             server.shutdown()
             server.server_close()

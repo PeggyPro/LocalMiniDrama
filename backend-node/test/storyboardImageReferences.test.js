@@ -89,6 +89,7 @@ async function captureRequest(t, options = {}) {
     storage: { local_path: './unused-test-storage', base_url: 'http://localhost:5680/static' },
   }));
   t.mock.method(imageClient, 'getDefaultImageConfig', () => ({
+    service_type: 'storyboard_image',
     provider: options.protocol === 'kling' ? 'kling' : 'openai',
     api_protocol: options.protocol || 'openai', model: 'gpt-image-test',
   }));
@@ -191,6 +192,23 @@ describe('imageService storyboard reference payloads (in-memory database and moc
     assert.deepEqual(request.reference_image_urls, ['/static/' + FIRST, SCENE, CHARACTER, PROP]);
     assert.match(labels(request)[0], /user-provided reference image/);
     assert.doesNotMatch(request.system_prompt, /LAYOUT_LOCK/);
+  });
+
+  it('preserves all native Qwen references and ordered labels through the sixteenth socket', async (t) => {
+    const manualRefs = Array.from({ length: 13 }, (_, index) => `https://manual.example/ref-${index}.png`);
+    const request = await captureRequest(t, { protocol: 'comfyui', manualRefs });
+    assert.deepEqual(request.reference_image_urls, [...manualRefs, SCENE, CHARACTER, PROP]);
+    assert.equal(request.reference_image_urls.length, 16);
+    assert.match(labels(request)[15], /prop\/object/);
+  });
+
+  it('retains native overflow including tail layout so validation can reject it without dropping selected images', async (t) => {
+    const manualRefs = Array.from({ length: 13 }, (_, index) => `https://manual.example/ref-${index}.png`);
+    const request = await captureRequest(t, { frameType: 'last', protocol: 'comfyui', manualRefs });
+    assert.deepEqual(request.reference_image_urls, [FIRST, ...manualRefs, SCENE, CHARACTER, PROP]);
+    assert.equal(request.reference_image_urls.length, 17);
+    assert.match(labels(request)[0], /LAYOUT_LOCK/);
+    assert.match(labels(request)[16], /prop\/object/);
   });
 
   it('preserves the one-image protocol cap and gives the tail layout reference priority', async (t) => {

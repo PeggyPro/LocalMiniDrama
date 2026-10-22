@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { normalizeMaterialHubToken } = require('./jimengMaterialHubService');
 const { isNativeComfyUIConfig, validateComfyUIVideoConnection } = require('./comfyUIVideoClient');
+const { isNativeComfyUIImageConfig, validateComfyUIImageConnection } = require('./comfyUIImageClient');
 
 function normalizeApiKeyForService(serviceType, apiKey) {
   if (serviceType === 'jimeng2_character_auth' && apiKey != null) {
@@ -280,9 +281,13 @@ async function testConnection(opts) {
   const model = remapArkModelId(opts.base_url, models[0] || '');
   const provider = (opts.provider || 'openai').toLowerCase();
   const serviceType = (opts.service_type || '').toLowerCase();
+  const nativeDefault = pickModelId(opts.default_model);
+  const nativeModel = nativeDefault && (!models.length || models.includes(nativeDefault)) ? nativeDefault : model;
+  if (isNativeComfyUIImageConfig(opts, nativeModel)) {
+    await validateComfyUIImageConnection(opts, opts.log, nativeModel);
+    return;
+  }
   if (!serviceType || serviceType === 'video') {
-    const nativeDefault = pickModelId(opts.default_model);
-    const nativeModel = nativeDefault && (!models.length || models.includes(nativeDefault)) ? nativeDefault : model;
     if (isNativeComfyUIConfig(opts, nativeModel)) {
       await validateComfyUIVideoConnection(opts, opts.log, nativeModel);
       return;

@@ -1,0 +1,195 @@
+{
+  "1": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "qwen_image_2.1_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    },
+    "_meta": {
+      "title": "Qwen-Image 2.1 场景生成模型"
+    }
+  },
+  "2": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen3vl_8b_int8_convrot.safetensors",
+      "type": "qwen_image",
+      "device": "default"
+    },
+    "_meta": {
+      "title": "Qwen3-VL 8B：理解参考图和提示词"
+    }
+  },
+  "3": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "qwen_image_2.1_vae_bf16.safetensors"
+    },
+    "_meta": {
+      "title": "Qwen-Image 2.1 专用 VAE"
+    }
+  },
+  "4": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "localminidrama_examples/scene.png"
+    },
+    "_meta": {
+      "title": "① 上传参考人物 / 参考图"
+    }
+  },
+  "5": {
+    "class_type": "TextEncodeQwenImage21",
+    "inputs": {
+      "prompt": "Image 1 is the environment reference: an old Chinese cowshed, wooden beams, a thatched roof, straw on the ground, and cool morning light. Image 2 is the only character, Xu Mu; keep his face, hairstyle and worn dark traditional clothing. Image 3 is the prop reference, a short wooden stick; keep its shape and texture. Create one new cinematic medium shot: Xu Mu sits upright on the straw in this cowshed, holding the short wooden stick in his right hand, looking alertly toward the doorway on the right of the frame. His face is clearly visible. Ancient Chinese historical drama, warm brown wood and cool morning rim light, photorealistic historical film still, horizontal 16:9 composition. The multiple views in the character reference show the same one person. Show one person in one continuous scene, with natural anatomy and clear hands.",
+      "negative_prompt": "",
+      "resolution": 1024,
+      "clip": [
+        "2",
+        0
+      ],
+      "images.image_1": [
+        "10",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ],
+      "images.image_2": [
+        "15",
+        0
+      ],
+      "images.image_3": [
+        "16",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "② 提示词：写你想要的新场景"
+    }
+  },
+  "6": {
+    "class_type": "QwenImage21Cache",
+    "inputs": {
+      "device": "auto",
+      "dtype": "default",
+      "model": [
+        "1",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "参考条件缓存（保持默认）"
+    }
+  },
+  "7": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": 2026102201,
+      "steps": 40,
+      "cfg": 1.0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1.0,
+      "model": [
+        "6",
+        0
+      ],
+      "positive": [
+        "5",
+        0
+      ],
+      "negative": [
+        "5",
+        1
+      ],
+      "latent_image": [
+        "5",
+        2
+      ]
+    },
+    "_meta": {
+      "title": "③ 生成新场景：denoise 保持 1.00"
+    }
+  },
+  "8": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "7",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "解码生成结果"
+    }
+  },
+  "9": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "image/V4_12_Qwen21_多参考图",
+      "images": [
+        "11",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "④ 新场景结果：预览并保存"
+    }
+  },
+  "15": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "localminidrama_examples/character.png"
+    },
+    "_meta": {
+      "title": "参考图 2 · 角色"
+    }
+  },
+  "16": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "localminidrama_examples/prop.png"
+    },
+    "_meta": {
+      "title": "参考图 3 · 道具"
+    }
+  },
+  "10": {
+    "class_type": "ImagePadForOutpaintTargetSize",
+    "inputs": {
+      "image": [
+        "4",
+        0
+      ],
+      "target_width": 1376,
+      "target_height": 768,
+      "feathering": 0,
+      "upscale_method": "lanczos"
+    },
+    "_meta": {
+      "title": "首图等比适配分镜比例（不拉伸人物）"
+    }
+  },
+  "11": {
+    "class_type": "ImageScale",
+    "inputs": {
+      "image": [
+        "8",
+        0
+      ],
+      "upscale_method": "lanczos",
+      "width": 1536,
+      "height": 864,
+      "crop": "disabled"
+    },
+    "_meta": {
+      "title": "交付分镜尺寸 1536×864"
+    }
+  }
+}

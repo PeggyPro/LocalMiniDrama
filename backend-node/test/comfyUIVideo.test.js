@@ -189,13 +189,13 @@ describe('native ComfyUI read-only connection validation', () => {
     assert.equal(managerCalls[0].log, log);
   });
 
-  it('route retains required-key checks for external providers, explicit proxies and non-video services', async () => {
+  it('route retains required-key checks for external providers, explicit proxies and non-native services', async () => {
     for (const body of [
       { base_url: 'https://example.test', provider: 'openai', model: 'gpt-4o', service_type: 'text' },
       { ...nativeConfig(), api_key: '', endpoint: '/proxy/video/generations' },
       { ...nativeConfig(), api_key: '', query_endpoint: '/proxy/task/{id}' },
       { ...nativeConfig(), api_key: '', api_protocol: 'openai' },
-      { ...nativeConfig(), api_key: '', service_type: 'image' },
+      { ...nativeConfig(), api_key: '', service_type: 'text' },
       { ...nativeConfig(), api_key: '', base_url: '' },
     ]) {
       const res = await callRoute(body);

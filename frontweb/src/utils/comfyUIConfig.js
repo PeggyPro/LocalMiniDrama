@@ -1,5 +1,16 @@
 export const COMFYUI_H3_MODEL = 'huobao_minimax_h3_reference_turbo_api'
 export const COMFYUI_WAN_MODEL = 'huobao_wan22_5b_t2v_32gb_api'
+export const COMFYUI_QWEN_IMAGE_MODEL = 'huobao_qwen_image_2_1_reference_api'
+
+export const COMFYUI_IMAGE_PRESET = Object.freeze({
+  id: 'comfyui',
+  name: 'ComfyUI 本地（Qwen-Image2.1 多参考图）',
+  base_url: 'http://127.0.0.1:8188',
+  api_protocol: 'comfyui',
+  endpoint: '',
+  query_endpoint: '',
+  models: Object.freeze([COMFYUI_QWEN_IMAGE_MODEL]),
+})
 
 export const COMFYUI_VIDEO_PRESET = Object.freeze({
   id: 'comfyui',
@@ -41,6 +52,16 @@ export function isNativeComfyUIVideoConfig(config, model) {
   const provider = String(config.provider || '').trim().toLowerCase()
   if (/comfyui|comfuui/i.test(provider)) return true
   return ['', 'openai', 'custom'].includes(provider) && /comfyui|comfuui/i.test(String(config.name || ''))
+}
+
+// Match native image routing without making external image proxies keyless.
+export function isNativeComfyUIImageConfig(config, model) {
+  if (!config || !['image', 'storyboard_image'].includes(String(config.service_type || '').trim().toLowerCase())) return false
+  const protocol = String(config.api_protocol || '').trim().toLowerCase()
+  if (protocol) return protocol === 'comfyui'
+  if (String(config.endpoint || '').trim() || String(config.query_endpoint || '').trim()) return false
+  if (getComfyUIVideoModel(config, model) === COMFYUI_QWEN_IMAGE_MODEL) return true
+  return /^(comfyui|comfuui)$/i.test(String(config.provider || '').trim())
 }
 
 export function buildAIConnectionTestPayload(row) {

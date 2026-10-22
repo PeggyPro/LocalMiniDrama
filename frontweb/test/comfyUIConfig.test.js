@@ -188,6 +188,58 @@ test('failed form validation never enters the save operation', async () => {
   }
 })
 
+test('native image preset exposes the exact Qwen reference workflow and both image provider handlers', () => {
+  const imagePreset = comfyUI.COMFYUI_IMAGE_PRESET
+  const qwen = comfyUI.COMFYUI_QWEN_IMAGE_MODEL
+  assert.equal(qwen, 'huobao_qwen_image_2_1_reference_api')
+  assert.equal(imagePreset.api_protocol, 'comfyui')
+  assert.deepEqual(imagePreset.models, [qwen])
+  for (const service_type of ['image', 'storyboard_image']) {
+    const harness = formHarness()
+    Object.assign(harness.form.value, { service_type, provider: 'comfyui', endpoint: '/old/images', query_endpoint: '/old/tasks/{id}' })
+    harness.onProviderChange('comfyui')
+    assert.equal(harness.form.value.base_url, 'http://127.0.0.1:8188')
+    assert.equal(harness.form.value.api_protocol, 'comfyui')
+    assert.equal(harness.form.value.modelText, qwen)
+    assert.equal(harness.form.value.default_model, qwen)
+    assert.equal(harness.form.value.endpoint, '')
+    assert.equal(harness.form.value.query_endpoint, '')
+    assert.equal(harness.isNativeComfyUIForm.value, true)
+    assert.equal(harness.endpointPreviewInfo.value.submit, `${imagePreset.base_url}/prompt`)
+    assert.equal(harness.endpointPreviewInfo.value.query, `${imagePreset.base_url}/history/{promptId}`)
+    assert.match(harness.comfyUICapabilityHint.value, /16 张参考图.*首帧站位锁.*无参考图.*文生图/)
+    assert.equal(validateKey(harness, ''), null)
+    harness.form.value.api_protocol = 'openai'
+    assert.equal(harness.isNativeComfyUIForm.value, false)
+    assert.match(validateKey(harness, '').message, /API Key/)
+  }
+})
+
+test('native image inference preserves proxy overrides and isolates video and text services', () => {
+  const config = { service_type: 'storyboard_image', api_protocol: '', provider: 'custom', model: [comfyUI.COMFYUI_QWEN_IMAGE_MODEL] }
+  assert.equal(comfyUI.isNativeComfyUIImageConfig(config), true)
+  for (const extra of [{ api_protocol: 'openai' }, { endpoint: '/images/generations' }, { query_endpoint: '/tasks/{id}' }, { service_type: 'text' }, { service_type: 'video' }]) {
+    assert.equal(comfyUI.isNativeComfyUIImageConfig({ ...config, ...extra }), false)
+  }
+  assert.equal(comfyUI.isNativeComfyUIImageConfig({ ...config, model: ['huobao_qwen_image_2_1_api'] }), false)
+  assert.equal(comfyUI.isNativeComfyUIImageConfig(null), false)
+  const protocolOption = component.match(/<el-option v-if="([^"]+)" label="ComfyUI 本地[^\n]+value="comfyui"/)[1]
+  for (const service_type of ['image', 'storyboard_image', 'video']) {
+    const harness = formHarness()
+    harness.form.value.service_type = service_type
+    assert.equal(harness.evaluate(protocolOption), true)
+  }
+})
+
+test('actual image connection test carries native protocol, default model and optional key', async () => {
+  const harness = formHarness()
+  const row = { ...nativeConfig(), service_type: 'storyboard_image', provider: 'comfyui', api_protocol: 'comfyui', model: [comfyUI.COMFYUI_QWEN_IMAGE_MODEL], default_model: comfyUI.COMFYUI_QWEN_IMAGE_MODEL, settings: null }
+  await harness.openTest(row)
+  assert.equal(harness.calls.length, 1)
+  assert.deepEqual(harness.calls[0], row)
+  assert.equal(harness.testResult.value, true)
+})
+
 test('actual openTest forwards the selected Wan default together with all saved routing fields', async () => {
   const harness = formHarness()
   const config = nativeConfig({ default_model: WAN, settings: null })

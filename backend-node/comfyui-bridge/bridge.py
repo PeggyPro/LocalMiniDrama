@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""LocalMiniDrama's managed, stdlib-only adapter for native ComfyUI video jobs."""
+"""LocalMiniDrama's managed, stdlib-only adapter for native ComfyUI image/video jobs."""
 from __future__ import annotations
 
 import argparse
@@ -27,6 +27,11 @@ MAX_IMAGE = 32 * 1024 * 1024
 MAX_BODY = 128 * 1024 * 1024
 MODEL_H3 = "huobao_minimax_h3_reference_turbo_api"
 MODEL_WAN = "huobao_wan22_5b_t2v_32gb_api"
+MODEL_QWEN_REFERENCE = "huobao_qwen_image_2_1_reference_api"
+IMAGE_MODELS = {
+    MODEL_QWEN_REFERENCE: {"name": "Qwen-Image 2.1 多参考图", "max_reference_images": 16,
+                           "reference_mode": "ordered_independent_references", "supports_text_to_image": True},
+}
 MODELS = {
     MODEL_H3: {"name": "MiniMax H3 Turbo", "max_reference_images": 9,
                "supports_first_frame": True, "supports_last_frame": True,
@@ -156,7 +161,7 @@ def dimensions(options, model):
 
 
 def load_workflow(model):
-    if model not in MODELS:
+    if model not in MODELS and model not in IMAGE_MODELS:
         raise BridgeError("未知 ComfyUI 工作流")
     with (ROOT / "workflows" / f"{model}.json").open(encoding="utf-8") as source:
         value = json.load(source)
@@ -234,6 +239,99 @@ def build_workflow(model, options, uploaded_names, task_id):
         graph["11"]["inputs"]["filename_prefix"] = prefix
     return graph, {"width": width, "height": height, "fps": 24, "frame_count": length,
                    "requested_duration": duration, "seed": seed}
+
+
+def qwen_image_sources(options):
+    refs = options.get("reference_urls") or []
+    if not isinstance(refs, list) or any(not isinstance(ref, str) or not ref.strip() for ref in refs):
+        raise BridgeError("reference_urls 必须是非空图片地址数组")
+    # Do not deduplicate: prompt image numbers must match the submitted order.
+    return list(refs), []
+
+
+def image_dimensions(options):
+    size = options.get("size") or "1536x864"
+    if options.get("width") is not None or options.get("height") is not None:
+        size = f"{options.get('width')}x{options.get('height')}"
+    match = re.fullmatch(r"(\d+)[x×](\d+)", str(size).strip())
+    if not match:
+        raise BridgeError("图片尺寸必须是宽x高，例如 1536x864")
+    width, height = map(int, match.groups())
+    if min(width, height) < 1 or max(width, height) > 16384:
+        raise BridgeError("图片宽高需在原生 ImageScale 节点支持的 1~16384 像素范围内")
+    aspect = width / height
+    native_width = max(32, round(math.sqrt(1024 * 1024 * aspect) / 32) * 32)
+    native_height = max(32, round(math.sqrt(1024 * 1024 / aspect) / 32) * 32)
+    if max(native_width, native_height) > 16384:
+        raise BridgeError("图片比例超出原生参考图处理节点的尺寸范围，请调整宽高比")
+    return width, height, native_width, native_height
+
+
+def build_image_workflow(model, options, uploaded_names, task_id):
+    refs, _ = qwen_image_sources(options)
+    if len(uploaded_names) != len(refs):
+        raise BridgeError("图片上传数量与参考图输入不一致", 500)
+    prompt = str(options.get("prompt") or "").strip()
+    if not prompt:
+        raise BridgeError("图片提示词不能为空")
+    width, height, native_width, native_height = image_dimensions(options)
+    seed = options.get("seed")
+    if seed is None or seed == -1:
+        seed = secrets.randbits(63)
+    if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed <= 0xffffffffffffffff:
+        raise BridgeError("seed 必须是 0~18446744073709551615 的整数或 -1")
+    graph = load_workflow(model)
+    # The maintained template is directly runnable with three example references.
+    # Replace its loaders and links with the exact request, never a stitched contact sheet.
+    graph = {key: node for key, node in graph.items() if node["class_type"] != "LoadImage"}
+    encode = graph["5"]["inputs"]
+    for key in list(encode):
+        if key.startswith("images."):
+            del encode[key]
+    encode.update(prompt=prompt, negative_prompt=str(options.get("negative_prompt") or ""), resolution=1024)
+    for index, name in enumerate(uploaded_names, 1):
+        node_id = f"lmd_image_{index}"
+        graph[node_id] = {"class_type": "LoadImage", "inputs": {"image": name},
+                          "_meta": {"title": f"参考图 {index}"}}
+        encode[f"images.image_{index}"] = [node_id, 0]
+    if refs:
+        # Only the first reference determines the native latent's aspect ratio.
+        # Fit it onto the requested canvas without cropping or stretching the subject.
+        graph["10"]["inputs"].update(image=["lmd_image_1", 0], target_width=native_width,
+                                      target_height=native_height)
+        encode["images.image_1"] = ["10", 0]
+        graph["7"]["inputs"]["latent_image"] = ["5", 2]
+    else:
+        del graph["10"]
+        graph["lmd_empty"] = {"class_type": "EmptyLatentImage", "inputs": {
+            "width": native_width, "height": native_height, "batch_size": 1}}
+        graph["7"]["inputs"]["latent_image"] = ["lmd_empty", 0]
+    graph["7"]["inputs"]["seed"] = seed
+    graph["11"]["inputs"].update(width=width, height=height)
+    graph["9"]["inputs"]["filename_prefix"] = "image/localminidrama/" + task_id
+    return graph, {"seed": seed, "width": width, "height": height,
+                   "native_width": native_width, "native_height": native_height,
+                   "reference_count": len(refs), "steps": graph["7"]["inputs"]["steps"],
+                   "cfg": graph["7"]["inputs"]["cfg"]}
+
+
+def validate_image_inputs(graph, object_info):
+    # Autogrow expands ONLY names declared by the live schema. Extra names would
+    # otherwise be silently ignored by ComfyUI even if /prompt accepts the graph.
+    schema = object_info.get("TextEncodeQwenImage21", {}).get("input", {})
+    fields = {**schema.get("required", {}), **schema.get("optional", {})}
+    field = fields.get("images")
+    if not field or len(field) < 2:
+        raise BridgeError("ComfyUI 未提供 Qwen 多参考图输入契约，请更新原生 Qwen 节点", 422)
+    template = field[1].get("template", {})
+    names = template.get("names")
+    if names is None and "prefix" in template:
+        names = [f"{template['prefix']}{index}" for index in range(template.get("max", 0))]
+    allowed = {"images." + name for name in names or []}
+    supplied = {key for key in graph["5"]["inputs"] if key.startswith("images.")}
+    if supplied - allowed:
+        raise BridgeError(f"当前 ComfyUI 原生 Qwen 节点实际支持 {len(allowed)} 张独立参考图，"
+                          f"本次传入 {len(supplied)} 张；请减少参考图或扩展原生输入契约，所有图片均未提交", 422)
 
 
 def validate_dependencies(graph, object_info):
@@ -329,6 +427,25 @@ def find_video(entry, base_url, output_ids=None):
     return None
 
 
+def find_image(entry, base_url, output_ids=None):
+    outputs = entry.get("outputs") or {}
+    for node_id in output_ids or outputs:
+        for item in (outputs.get(node_id) or {}).get("images", []) or []:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("filename")
+            if not isinstance(name, str) or not re.search(r"\.(png|jpe?g|webp)$", name, re.I):
+                continue
+            folder = str(item.get("subfolder") or "").replace("\\", "/")
+            if "/" in name or "\\" in name or ".." in folder.split("/") or folder.startswith("/"):
+                raise BridgeError("ComfyUI 图片输出路径无效", 502)
+            if item.get("type", "output") != "output":
+                continue
+            output = {"filename": name, "subfolder": folder, "type": "output"}
+            return {"image_url": base_url + "/view?" + urlencode(output), "output": output}
+    return None
+
+
 def execution_error(entry):
     status = entry.get("status") or {}
     for event in reversed(status.get("messages") or []):
@@ -378,30 +495,36 @@ class BridgeService:
 
     def submit(self, options, preview=False):
         model = options.get("model")
-        refs, guides = image_sources(model, options)
+        is_image = model in IMAGE_MODELS
+        refs, guides = qwen_image_sources(options) if is_image else image_sources(model, options)
+        builder = build_image_workflow if is_image else build_workflow
+        capabilities = IMAGE_MODELS[model] if is_image else MODELS[model]
         base = native_url(options.get("comfyui_url"))
         task_id = "lmd-comfy-" + secrets.token_hex(16)
         # Validate all parameters, node classes and model filenames BEFORE any upload/submission.
         dummy = [f"localminidrama/refs/preview-{index}.png" for index in range(len(refs) + len(guides))]
-        graph, metadata = build_workflow(model, options, dummy, task_id)
+        graph, metadata = builder(model, options, dummy, task_id)
         client = self.client_factory(base, options.get("comfyui_token") or "")
         info = client.request("/object_info")
         validate_dependencies(graph, info)
+        if is_image:
+            validate_image_inputs(graph, info)
         if preview:
-            return {"valid": True, "model": model, "capabilities": MODELS[model],
+            return {"valid": True, "model": model, "capabilities": capabilities,
                     "metadata": metadata, "reference_count": len(refs), "guide_count": len(guides),
                     "workflow": graph}
         images = [image_bytes(value) for value in [*refs, *(value for value, _ in guides)]]
         names = [client.upload(image, index) for index, image in enumerate(images)]
         # Reuse resolved random seed so the prepared and submitted workflow agree.
-        graph, metadata = build_workflow(model, {**options, "seed": metadata["seed"]}, names, task_id)
+        graph, metadata = builder(model, {**options, "seed": metadata["seed"]}, names, task_id)
         response = client.request("/prompt", {"prompt": graph, "client_id": task_id})
         if response.get("node_errors") or not response.get("prompt_id"):
             detail = json.dumps(response.get("node_errors") or response.get("error") or "缺少 prompt_id", ensure_ascii=False)
             raise BridgeError("ComfyUI 拒绝工作流：" + detail[:1500], 422)
         task = {"task_id": task_id, "prompt_id": str(response["prompt_id"]), "status": "processing",
                 "model": model, "comfyui_url": base, "metadata": metadata, "created_at": time.time(),
-                "output_ids": ["92"] if model == MODEL_H3 else ["11"]}
+                "output_ids": ["9"] if is_image else (["92"] if model == MODEL_H3 else ["11"]),
+                "kind": "image" if is_image else "video"}
         self.tokens[task_id] = options.get("comfyui_token") or ""
         self.save(task)
         return self.public(task)
@@ -409,7 +532,7 @@ class BridgeService:
     @staticmethod
     def public(task):
         return {key: value for key, value in task.items()
-                if key in ("task_id", "prompt_id", "status", "model", "metadata", "video_url", "output", "error", "progress", "queue_position")}
+                if key in ("task_id", "prompt_id", "status", "model", "metadata", "video_url", "image_url", "output", "error", "progress", "queue_position")}
 
     def poll(self, task_id, token=""):
         task = self.get(task_id)
@@ -423,11 +546,13 @@ class BridgeService:
             if error:
                 task.update(status="failed", error=error)
             else:
-                video = find_video(entry, task["comfyui_url"], task["output_ids"])
-                if video:
-                    task.update(status="completed", progress=100, **video)
+                is_image = task.get("kind") == "image"
+                result = (find_image if is_image else find_video)(entry, task["comfyui_url"], task["output_ids"])
+                if result:
+                    task.update(status="completed", progress=100, **result)
                 elif (entry.get("status") or {}).get("completed"):
-                    task.update(status="failed", error="ComfyUI 已完成，但未找到 MP4/WebM 视频输出，请检查 SaveVideo 节点")
+                    message = "未找到图片输出，请检查 SaveImage 节点" if is_image else "未找到 MP4/WebM 视频输出，请检查 SaveVideo 节点"
+                    task.update(status="failed", error="ComfyUI 已完成，但" + message)
             self.save(task)
         else:
             queue = client.request("/queue")
@@ -463,7 +588,7 @@ def handler_for(service, secret, parent_pid=None):
         def handle_request(self, method):
             parsed = urlparse(self.path)
             if parsed.path == "/health" and method == "GET":
-                health = {"service": SERVICE, "version": VERSION, "pid": os.getpid(), "models": list(MODELS)}
+                health = {"service": SERVICE, "version": VERSION, "pid": os.getpid(), "models": [*MODELS, *IMAGE_MODELS]}
                 challenge = self.headers.get("X-LMD-Bridge-Challenge", "")
                 if re.fullmatch(r"[0-9a-fA-F]{64}", challenge) and parent_pid is not None:
                     launcher_pid = os.getppid()
@@ -474,12 +599,13 @@ def handler_for(service, secret, parent_pid=None):
             if not secrets.compare_digest(self.headers.get("Authorization", ""), "Bearer " + secret):
                 return self.send_json(401, {"error": "桥接认证失败"})
             try:
-                if method == "GET" and parsed.path == "/video/models":
-                    return self.send_json(200, {"models": [{"id": key, **value} for key, value in MODELS.items()]})
-                if method == "GET" and parsed.path.startswith("/video/task/"):
-                    task_id = parsed.path.removeprefix("/video/task/")
+                if method == "GET" and parsed.path in ("/video/models", "/image/models"):
+                    models = IMAGE_MODELS if parsed.path.startswith("/image/") else MODELS
+                    return self.send_json(200, {"models": [{"id": key, **value} for key, value in models.items()]})
+                if method == "GET" and (parsed.path.startswith("/video/task/") or parsed.path.startswith("/image/task/")):
+                    task_id = parsed.path.split("/task/", 1)[1]
                     return self.send_json(200, service.poll(task_id, self.headers.get("X-ComfyUI-Token", "")))
-                if method == "POST" and parsed.path in ("/video/generations", "/video/validate"):
+                if method == "POST" and parsed.path in ("/video/generations", "/video/validate", "/image/generations", "/image/validate"):
                     length = int(self.headers.get("Content-Length", "0"))
                     if length <= 0 or length > MAX_BODY:
                         raise BridgeError("桥接请求为空或超过 128MB", 413)
@@ -489,7 +615,10 @@ def handler_for(service, secret, parent_pid=None):
                         raise BridgeError("桥接请求必须是 JSON") from error
                     if not isinstance(options, dict):
                         raise BridgeError("桥接请求必须是 JSON 对象")
-                    result = service.submit(options, preview=parsed.path == "/video/validate")
+                    models = IMAGE_MODELS if parsed.path.startswith("/image/") else MODELS
+                    if options.get("model") not in models:
+                        raise BridgeError("此接口不支持所选 ComfyUI 模型，请选择相应的内置图片或视频工作流")
+                    result = service.submit(options, preview=parsed.path.endswith("/validate"))
                     return self.send_json(200, result)
                 raise BridgeError("桥接接口不存在", 404)
             except BridgeError as error:

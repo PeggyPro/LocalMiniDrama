@@ -11,6 +11,7 @@ const { postJSONWithTimeout, postBodyWithTimeout } = require('./aiClient');
 const { getOpenAIImageEditUrl, buildOpenAIImageEditRequest } = require('./openAIImageEdits');
 const { flattenModelIds, pickModelId } = require('./modelId');
 const seedance2AssetGuards = require('../utils/seedance2AssetGuards');
+const comfyUIImageClient = require('./comfyUIImageClient');
 
 /** 图生 POST 使用 Node http(s)，默认 10 分钟，避免 undici fetch 大包体/慢链路下模糊失败 */
 const IMAGE_HTTP_TIMEOUT_MS = 600000;
@@ -1464,7 +1465,9 @@ async function callImageApi(db, log, opts) {
   const model = getModelFromConfig(config, preferredModel);
   const provider = (config.provider || '').toLowerCase();
   // api_protocol 显式指定接口规范，优先级高于 provider 推断；未设置时按 provider 自动判断
-  const protocol = (config.api_protocol || '').toLowerCase() || inferProtocol(provider, model);
+  const protocol = comfyUIImageClient.isNativeComfyUIImageConfig(config, model)
+    ? 'comfyui'
+    : (config.api_protocol || '').toLowerCase() || inferProtocol(provider, model);
 
   // ── 参考图标签注入：为所有非 Gemini 模型将标签注入 prompt 文本 ─────────────────────────────
   // Gemini 通过 parts 结构处理（interleaved text+image），不需要文字注入。
@@ -1512,6 +1515,12 @@ async function callImageApi(db, log, opts) {
   const userNegFragment = [...new Set([user_negative_prompt, negative_prompt]
     .map(value => String(value || '').trim()).filter(Boolean))].join(', ');
   const mergedNegativePrompt = mergeNegativePromptFragments(autoNegativePrompt, userNegFragment);
+
+  if (protocol === 'comfyui') {
+    return comfyUIImageClient.callComfyUIImageApi(config, log, {
+      ...opts, model, prompt: effectivePrompt, negative_prompt: mergedNegativePrompt,
+    });
+  }
 
   if (protocol === 'dashscope') {
     return callDashScopeImageApi(config, log, {
@@ -1926,7 +1935,13 @@ function rowToItem(r) {
 }
 
 /** 分镜参考图上限（与 callGeminiImageApi 的 MAX_GEMINI_REF_IMAGES、可灵单图参考等对齐） */
-function getStoryboardReferenceLimits(config, modelName) {
+function getStoryboardReferenceLimits(config, modelName, { preserveOverflow = false } = {}) {
+  if (comfyUIImageClient.isNativeComfyUIImageConfig(config, modelName)) {
+    // Keep overflow during assembly so the native client can reject it explicitly,
+    // rather than silently dropping a selected role, prop or first-frame lock.
+    const limit = preserveOverflow ? Infinity : 16;
+    return { total: limit, maxCharacters: limit, maxObjects: limit };
+  }
   const provider = (config?.provider || '').toLowerCase();
   const protocol = (config?.api_protocol || '').toLowerCase() || inferProtocol(provider, modelName || config?.model);
   if (protocol === 'kling') {

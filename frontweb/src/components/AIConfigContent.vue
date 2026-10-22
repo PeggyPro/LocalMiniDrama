@@ -108,6 +108,14 @@
                 </span>
               </template>
             </el-table-column>
+            <el-table-column prop="priority" label="优先级" width="110" align="center" sortable>
+              <template #header>
+                <el-tooltip content="系统优先使用默认配置；同类配置中优先级数字越大越优先。未设置时为 0，可在编辑配置中修改。" placement="top">
+                  <span>优先级</span>
+                </el-tooltip>
+              </template>
+              <template #default="{ row }">{{ row.priority ?? 0 }}</template>
+            </el-table-column>
             <el-table-column prop="is_default" label="默认" width="60">
               <template #default="{ row }">
                 <el-tag v-if="row.is_default" type="success" size="small">✓</el-tag>
@@ -388,7 +396,7 @@
             <el-option label="可灵 Omni-Video（官方 api-beijing / ffir 中转，O1 全能）" value="kling_omni" />
             <el-option label="xAI Grok Imagine（官方 prompt + aspect_ratio，/v1/videos/generations）" value="xai" />
             <el-option label="MiniMax H3（官方 V2：/v2/video_generation，模型 MiniMax-H3）" value="minimax_h3" />
-            <el-option v-if="form.service_type === 'video'" label="ComfyUI 本地（火宝视频工作流，自动桥接）" value="comfyui" />
+            <el-option v-if="['image', 'storyboard_image', 'video'].includes(form.service_type)" label="ComfyUI 本地（火宝工作流，自动桥接）" value="comfyui" />
             <el-option label="NanoBanana" value="nano_banana" />
           </el-select>
         </el-form-item>
@@ -811,7 +819,7 @@ input_reference = (图片文件，可选)</pre>
             ⚠️ Gemini 端点由系统根据模型名固定生成，上方「提交端点」和「查询端点」字段对 Gemini 无效，填了也不生效。
           </p>
           <p v-else-if="endpointPreviewInfo.isJimeng2Auth" class="ep-tip">角色「SD2认证」将调用上述地址注册素材（POST 创建、GET 查询状态）。</p>
-          <p v-else-if="endpointPreviewInfo.isComfyUI" class="ep-tip">本地桥接自动启动，Base URL 保持 ComfyUI 地址；提交端点和查询端点留空即可。</p>
+          <p v-else-if="endpointPreviewInfo.isComfyUI" class="ep-tip">本地桥接自动启动，Base URL 保持 ComfyUI 地址；提交端点和查询端点留空即可。测试连接仅检查节点与模型依赖，不提交生成任务。</p>
           <p v-else class="ep-tip">以上为系统推断的实际调用地址（可手动填写上方端点字段来覆盖）</p>
         </div>
 
@@ -1248,6 +1256,7 @@ import {
 import Sd2AssetManagement from '@/components/Sd2AssetManagement.vue'
 import {
   COMFYUI_H3_MODEL, COMFYUI_WAN_MODEL, COMFYUI_VIDEO_PRESET,
+  COMFYUI_QWEN_IMAGE_MODEL, COMFYUI_IMAGE_PRESET, isNativeComfyUIImageConfig,
   getComfyUIVideoModel, isNativeComfyUIVideoConfig, buildAIConnectionTestPayload,
 } from '@/utils/comfyUIConfig'
 
@@ -1350,10 +1359,15 @@ const presetModelPick = ref('')
 const presetReasoningEffortPick = ref('')
 
 const formModelList = computed(() => parseModelText(form.value.modelText))
-const isNativeComfyUIForm = computed(() => isNativeComfyUIVideoConfig(form.value))
+const isNativeComfyUIForm = computed(() => isNativeComfyUIVideoConfig(form.value) || isNativeComfyUIImageConfig(form.value))
 const comfyUIKeyHint = '本地 ComfyUI 未启用鉴权时可留空；启用后填写 ComfyUI Token。'
 const comfyUICapabilityHint = computed(() => {
   const model = getComfyUIVideoModel(form.value)
+  if (['image', 'storyboard_image'].includes(form.value.service_type)) {
+    return model === COMFYUI_QWEN_IMAGE_MODEL
+      ? 'Qwen-Image2.1 支持按编号顺序传入最多 16 张参考图（含尾帧的首帧站位锁）；无参考图时文生图。超出上限会明确报错，请减少参考图后重试。'
+      : '当前图片工作流尚未适配，请选择预设的 Qwen-Image2.1 多参考图模型。'
+  }
   if (model === COMFYUI_H3_MODEL) return 'H3 支持按顺序传入最多 9 张参考图，并支持首帧和尾帧。'
   if (model === COMFYUI_WAN_MODEL) return 'Wan 仅支持单张首帧图；参考图可作为首帧，不支持尾帧或多图参考。'
   return '当前工作流尚未适配，请选择预设的 H3 或 Wan 模型。'
@@ -1484,6 +1498,7 @@ const providerConfigs = {
     { id: 'agnes', name: 'Agnes AI', models: ['agnes-3.0-flash', 'agnes-2.5-flash', 'agnes-2.5-pro', 'agnes-2.0-flash'] }
   ],
   image: [
+    COMFYUI_IMAGE_PRESET,
     { id: 'volcengine', name: '火山引擎', models: ['doubao-seedream-5-0-flash-260915', 'doubao-seedream-5-0-pro-260628', 'doubao-seedream-4-5-251128'] },
     { id: 'kling', name: '可灵 Kling', models: ['kling-image', 'kling-omni-image'] },
     { id: 'nano_banana', name: 'NanoBanana', models: ['nano-banana-2', 'nano-banana-pro', 'nano-banana'] },
@@ -1495,6 +1510,7 @@ const providerConfigs = {
     { id: 'agnes', name: 'Agnes AI', models: ['agnes-image-2.5-flash', 'agnes-image-2.1-flash', 'agnes-image-2.0-flash'] }
   ],
   storyboard_image: [
+    COMFYUI_IMAGE_PRESET,
     { id: 'dashscope', name: '通义万象', models: ['wan2.6-image', 'qwen-image-edit-plus-2026-01-09', 'qwen-image-edit-plus', 'qwen-image-edit-max'] },
     { id: 'volcengine', name: '火山引擎', models: ['doubao-seedream-5-0-flash-260915', 'doubao-seedream-5-0-pro-260628', 'doubao-seedream-4-5-251128'] },
     { id: 'kling', name: '可灵 Kling', models: ['kling-image', 'kling-omni-image'] },
@@ -1846,9 +1862,9 @@ function onProviderChange(providerId) {
   }
   // 自动填充接口规范
   form.value.api_protocol = providerProtocolMap[providerId] || (st === 'text' ? '' : 'openai')
-  if (st === 'video' && providerId === COMFYUI_VIDEO_PRESET.id) {
-    form.value.endpoint = COMFYUI_VIDEO_PRESET.endpoint
-    form.value.query_endpoint = COMFYUI_VIDEO_PRESET.query_endpoint
+  if (['image', 'storyboard_image', 'video'].includes(st) && providerId === 'comfyui') {
+    form.value.endpoint = p.endpoint
+    form.value.query_endpoint = p.query_endpoint
   }
   if (st === 'video' && providerId === 'jimeng_ai_api') {
     form.value.endpoint = ''

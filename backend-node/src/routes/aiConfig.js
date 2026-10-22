@@ -2,6 +2,7 @@ const aiConfigService = require('../services/aiConfigService');
 const aiClient = require('../services/aiClient');
 const imageClient = require('../services/imageClient');
 const videoClient = require('../services/videoClient');
+const { isNativeComfyUIImageConfig } = require('../services/comfyUIImageClient');
 const { applyReasoningEffort } = require('../services/reasoningEffort');
 const { applyDeepSeekChatOptions } = require('../services/deepseekConfig');
 const response = require('../response');
@@ -157,7 +158,8 @@ function testConnection(log) {
   return async (req, res) => {
     const body = req.body || {};
     const serviceType = String(body.service_type || '').toLowerCase();
-    const isNativeComfyUI = (!serviceType || serviceType === 'video') && videoClient.isNativeComfyUIConfig(body);
+    const isNativeComfyUI = isNativeComfyUIImageConfig(body)
+      || ((!serviceType || serviceType === 'video') && videoClient.isNativeComfyUIConfig(body));
     if (!body.base_url || (!body.api_key && !isNativeComfyUI)) {
       return response.badRequest(res, '缺少 base_url 或 api_key');
     }

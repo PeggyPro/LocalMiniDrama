@@ -536,10 +536,14 @@ function create(db, log, req) {
   const taskId = task.id;
   const frameType = req.frame_type ?? null;
   const sceneId = req.scene_id != null ? Number(req.scene_id) : null;
-  const refImagesJson =
-    req.reference_images && Array.isArray(req.reference_images)
-      ? JSON.stringify(req.reference_images.slice(0, 10))
-      : null;
+  let referenceImages = Array.isArray(req.reference_images) ? req.reference_images.slice(0, 10) : null;
+  if (Array.isArray(req.reference_images) && req.reference_images.length > 10) {
+    const config = imageClient.getDefaultImageConfig(db, req.model, null, req.storyboard_id ? 'storyboard_image' : 'image', { readOnly: true });
+    if (require('./comfyUIImageClient').isNativeComfyUIImageConfig(config, req.model)) {
+      referenceImages = req.reference_images;
+    }
+  }
+  const refImagesJson = referenceImages ? JSON.stringify(referenceImages) : null;
   if (req.reference_images && Array.isArray(req.reference_images)) {
     log.info('reference_images 完整路径（请求入参）', {
       image_gen_create: true,
@@ -712,7 +716,7 @@ async function processImageGeneration(db, log, imageGenId) {
       elapsed: elapsed(),
     });
 
-    const refLimits = imageClient.getStoryboardReferenceLimits(config, row.model);
+    const refLimits = imageClient.getStoryboardReferenceLimits(config, row.model, { preserveOverflow: true });
     log.info('[图生] Step2 参考图上限', {
       id: imageGenId,
       total: refLimits.total,
