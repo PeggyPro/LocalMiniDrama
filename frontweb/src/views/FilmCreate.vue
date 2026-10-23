@@ -883,7 +883,7 @@
             <span class="sb-config-hint">四/九宫格自动按视角拆分</span>
           </label>
         </div>
-        <div class="sb-config-row sb-narration-export-row" style="margin-top:10px;flex-wrap:wrap;align-items:center;gap:12px">
+        <div class="sb-narration-export-row sb-generation-options">
           <el-checkbox v-model="storyboardUseFirstLastFrame" @change="onStoryboardUseFirstLastFrameChange">
             首尾帧参考图（经典模式双槽；图生前先走专业帧提示词模块 first/last，再生图；视频绑定 first/last_frame_url）
           </el-checkbox>
@@ -893,6 +893,8 @@
           <el-checkbox v-model="storyboardIncludeNarration" @change="() => saveProjectSettings(false)">
             生成分镜时生成解说旁白（narration，与对白分开，便于后期 TTS）
           </el-checkbox>
+        </div>
+        <div v-if="storyboards.length > 0" class="sb-export-actions">
           <el-button
             v-if="storyboards.length > 0"
             class="sb-export-srt-btn"
@@ -10828,7 +10830,37 @@ html.light .sb-video-placeholder {
   font-size: 0.85rem;
   margin: 0 4px;
 }
-/* 解说导出行：避免浅色主题下勾选文案与卡片背景对比度不足 */
+.sb-generation-options {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 10px 0 14px;
+}
+.sb-generation-options :deep(.el-checkbox) {
+  height: auto;
+  min-height: 24px;
+  max-width: 100%;
+  margin-right: 0;
+  align-items: flex-start;
+}
+.sb-generation-options :deep(.el-checkbox__input) {
+  margin-top: 3px;
+}
+.sb-generation-options :deep(.el-checkbox__label) {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.sb-export-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.sb-export-actions > .el-button + .el-button {
+  margin-left: 0;
+}
+/* 避免浅色主题下勾选文案与卡片背景对比度不足 */
 .sb-narration-export-row :deep(.el-checkbox__label) {
   color: #e4e4e7;
   font-size: 0.875rem;
