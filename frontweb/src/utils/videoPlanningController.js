@@ -9,6 +9,7 @@ export function newPlanningState() {
 export function createVideoPlanningController(api, state = newPlanningState()) {
   let epoch = 0
   let loadSerial = 0
+  let episodeReadSerial = 0
   let pendingLoad = null
   let scope = { episodeId: null, dramaId: null }
   const same = (token) => token === epoch
@@ -16,6 +17,30 @@ export function createVideoPlanningController(api, state = newPlanningState()) {
     if (dto?.storyboard_id != null) state.items = { ...state.items, [dto.storyboard_id]: dto }
   }
   const applyEpisode = (dto) => { state.items = Object.fromEntries((dto?.items || []).map((item) => [item.storyboard_id, item])) }
+  // A successful run response must become visible before the first background GET.
+  function applySubmittedPlan(plan) {
+    if (!plan || plan.status === 'preview') return
+    episodeReadSerial++
+    const items = { ...state.items }
+    for (const node of plan.nodes || []) {
+      const item = items[node.storyboard_id]
+      if (!item) continue
+      items[node.storyboard_id] = { ...item, last_execution: {
+        plan_id: plan.id, node_id: node.id, model_id: node.model_id, status: node.status,
+        version_id: node.version_id, blocking_reasons: node.blocking_reasons || [], updated_at: node.updated_at,
+      } }
+    }
+    state.items = items
+  }
+  async function refreshExecution() {
+    if (!scope.episodeId) return false
+    const token = epoch
+    const serial = ++episodeReadSerial
+    const episode = await api.episode(scope.episodeId)
+    if (!same(token) || serial !== episodeReadSerial) return false
+    applyEpisode(episode)
+    return true
+  }
   function setScope(next) {
     epoch++
     scope = { ...next }
@@ -34,13 +59,14 @@ export function createVideoPlanningController(api, state = newPlanningState()) {
     if (!scope.episodeId) return false
     const token = epoch
     const serial = ++loadSerial
+    const readSerial = ++episodeReadSerial
     state.loading = true
     try {
       const [episode, catalog, sources] = await Promise.all([
         api.episode(scope.episodeId), api.capabilities(), api.sources(scope.dramaId),
       ])
       if (!same(token) || serial !== loadSerial) return false
-      applyEpisode(episode)
+      if (readSerial === episodeReadSerial) applyEpisode(episode)
       state.capabilities = catalog?.items || []
       state.sources = sources || { storyboards: [], versions: [] }
       state.loaded = true
@@ -117,13 +143,16 @@ export function createVideoPlanningController(api, state = newPlanningState()) {
     return mutate(async () => {
       try {
         const dto = await api.run(plan.id, plan.revision)
-        if (same(token) && state.plan?.id === plan.id) state.plan = dto
+        if (same(token) && state.plan?.id === plan.id) { state.plan = dto; applySubmittedPlan(dto) }
         return dto
       } catch (error) {
         // A lost response is not proof that submission failed. Read status before permitting another run.
         if (same(token) && state.plan?.id === plan.id) {
-          try { await refreshPlan() } catch {
-            if (same(token) && state.plan?.id === plan.id) state.plan = { ...plan, status: 'submitted_unknown' }
+          try { const recovered = await refreshPlan(); if (same(token)) applySubmittedPlan(recovered) } catch {
+            if (same(token) && state.plan?.id === plan.id) {
+              state.plan = { ...plan, status: 'submitted_unknown', nodes: (plan.nodes || []).map((node) => ({ ...node, status: 'submitted_unknown' })) }
+              applySubmittedPlan(state.plan)
+            }
           }
         }
         throw error
@@ -136,7 +165,7 @@ export function createVideoPlanningController(api, state = newPlanningState()) {
     if (!id) throw new Error('没有可恢复的计划')
     return mutate(async () => {
       const dto = await api.resume(id)
-      if (same(token) && state.plan?.id === id) state.plan = dto
+      if (same(token) && state.plan?.id === id) { state.plan = dto; applySubmittedPlan(dto) }
       return dto
     })
   }
@@ -167,5 +196,5 @@ export function createVideoPlanningController(api, state = newPlanningState()) {
     if (!state.items[id]) throw new Error('当前分集不包含该镜头，请重新操作')
     if (hasVideoPlanning(state.items[id])) throw new Error('该镜头已有视频方案，请使用计划预览并点击「运行计划」')
   }
-  return { state, setScope, load, recommend, choice, preview, openPlan, refreshPlan, run, resume, versions, adopt, guardLegacy }
+  return { state, setScope, load, refreshExecution, recommend, choice, preview, openPlan, refreshPlan, run, resume, versions, adopt, guardLegacy }
 }

@@ -89,6 +89,29 @@ test('preview freezes a finite graph, canonical choice, input and original conne
   assert.equal(planning.getStoryboardVideoPlan(db, 1).selected_version_id, null);
 });
 
+test('episode reads expose durable execution before summary writes and ignore newer previews', async t => {
+  const db = fixture(t); choose(db, 1);
+  let preflightStatus;
+  const { service } = adapters(db, { processing: true, preflight: async () => {
+    preflightStatus = planning.getEpisodeVideoPlans(db, 1).items[0].last_execution;
+  } });
+  const plan = await preview(service, db);
+  assert.equal(planning.getStoryboardVideoPlan(db, 1).last_execution, null);
+  await run(service, db, plan);
+  assert.equal(preflightStatus.plan_id, plan.id);
+  assert.equal(preflightStatus.status, 'preflighting');
+  db.prepare('UPDATE storyboard_video_plans SET last_execution_json=NULL WHERE storyboard_id=1').run();
+  await preview(service, db);
+  const before = db.prepare('SELECT total_changes() AS n').get().n;
+  const current = planning.getStoryboardVideoPlan(db, 1);
+  assert.equal(current.last_execution.plan_id, plan.id);
+  assert.equal(current.last_execution.status, 'processing');
+  assert.equal(current.selected_version_id, null);
+  assert.equal(db.prepare('SELECT total_changes() AS n').get().n, before, 'GET never writes or submits');
+  db.prepare("UPDATE video_execution_nodes SET status='completed' WHERE plan_id=?").run(plan.id);
+  assert.equal(planning.getStoryboardVideoPlan(db, 1).last_execution.status, 'completed');
+});
+
 test('choice/content changes after preview reject run, including edits while preflight awaits', async t => {
   const db = fixture(t); choose(db, 1);
   const { service, calls } = adapters(db);

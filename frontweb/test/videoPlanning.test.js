@@ -105,6 +105,24 @@ test('preview and GET polling never submit or adopt; run is explicit and CAS-bou
   await assert.rejects(c.run(), /先预览/)
 })
 
+test('a pre-submission episode response cannot erase immediate queued status', async () => {
+  const late = deferred()
+  let reads = 0
+  const { c, state } = fixture({
+    episode: async () => ++reads === 2 ? late.promise : { items: [shot(10)] },
+    run: async () => ({ id: 'p1', status: 'running', nodes: [{ id: 'n1', storyboard_id: 10, status: 'queued' }] }),
+  })
+  await c.load()
+  await c.preview([{ id: 10 }], { 10: { prompt: 'existing' } })
+  const oldPoll = c.refreshExecution()
+  await c.run()
+  assert.equal(state.items[10].last_execution.status, 'queued')
+  late.resolve({ items: [shot(10)] })
+  assert.equal(await oldPoll, false)
+  assert.equal(state.items[10].last_execution.status, 'queued')
+  assert.equal(state.items[10].selected_version_id, 'old-version')
+})
+
 test('choice conflict reloads server state without retrying the captured edit', async () => {
   let saves = 0
   const conflict = Object.assign(new Error('conflict'), { response: { status: 409 } })

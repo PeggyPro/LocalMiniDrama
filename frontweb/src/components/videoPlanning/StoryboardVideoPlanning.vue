@@ -2,7 +2,8 @@
   <section class="video-planning-card" :aria-label="`镜头 ${storyboard.id} 视频方案`">
     <div class="planning-title">
       <strong>逐镜视频方案</strong>
-      <el-tag size="small" :type="view.ready ? 'success' : view.state === 'blocked' ? 'danger' : 'info'">{{ view.label }}</el-tag>
+      <el-tag size="small" :type="view.ready ? 'success' : view.state === 'blocked' ? 'danger' : 'info'">{{ view.ready ? '方案就绪' : view.label }}</el-tag>
+      <el-tag v-if="item?.last_execution" size="small" :type="activeExecution(item.last_execution) ? 'warning' : item.last_execution.status === 'completed' ? 'success' : 'info'">执行：{{ stateLabel(item.last_execution.status) }}</el-tag>
       <el-tag v-if="item?.choice?.manual_locked" size="small" type="warning">手动锁定</el-tag>
     </div>
     <p v-if="!loaded" class="planning-warning">{{ error || '正在加载方案，暂不允许提交视频' }}</p>
@@ -15,7 +16,7 @@
       <p class="planning-detail">来源：{{ sourceLabel(item?.choice?.source_ref) }}</p>
       <p v-if="selectedModel?.runtime_verified === false" class="planning-detail">目录已注册，尚未经本机 GPU 实测；执行前仍需校验输入和来源。</p>
       <p v-for="reason in view.reasons" :key="reason" class="planning-warning">{{ reason }}</p>
-      <p v-if="item?.last_execution" class="planning-detail">最近执行：{{ item.last_execution.model_id || '见计划节点' }} · {{ stateLabel(item.last_execution.status) }} <span v-if="item.last_execution.plan_id">· 计划 {{ item.last_execution.plan_id }}</span></p>
+      <p v-if="item?.last_execution" class="planning-detail">最近执行：{{ item.last_execution.model_id || '见计划节点' }} · {{ executionLabel(item.last_execution) }} <span v-if="item.last_execution.plan_id">· 计划 {{ item.last_execution.plan_id }}</span></p>
       <p class="planning-detail">当前采用版本：{{ item?.selected_version_id || '未采用规划版本（保留原选片）' }}</p>
       <p v-if="adoptedVersionMissing" class="planning-warning">当前采用版本尚未加载，主播放器不会切换到其他历史。请点击顶部「刷新方案」。</p>
       <div class="planning-actions">
@@ -69,7 +70,7 @@
 
 <script setup>
 import { computed, ref } from 'vue'
-import { capabilityAvailable, hasVideoPlanning, makeChoiceBody, planningPresentation, reasonTexts, sourceKey, sourceLabel, sourceOptions, stateLabel, videoRecordUrl } from '../../utils/videoPlanning.js'
+import { capabilityAvailable, hasVideoPlanning, makeChoiceBody, planningPresentation, reasonTexts, sourceKey, sourceLabel, sourceOptions, stateLabel, videoRecordUrl, activeExecution, executionLabel } from '../../utils/videoPlanning.js'
 const props = defineProps({
   storyboard: { type: Object, required: true }, item: Object, loaded: Boolean, busy: Boolean, error: String,
   capabilities: { type: Array, default: () => [] }, sources: { type: Object, default: () => ({}) },

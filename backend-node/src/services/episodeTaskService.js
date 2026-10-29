@@ -1,4 +1,6 @@
 // A read-only view over existing work. It does not enqueue, resume, cancel or repair tasks.
+const { hasExecutionSchema } = require('./videoExecutionSchema');
+
 const EPISODE_TYPES = new Set([
   'storyboard_generation', 'background_extraction', 'prop_extraction',
   'character_extraction', 'video_merge', 'episode_story_generation',
@@ -41,7 +43,9 @@ function publicUrl(value) {
 
 function bucket(status) {
   if (['completed', 'succeeded', 'success'].includes(status)) return 'completed';
-  if (['failed', 'cancelled', 'canceled', 'blocked', 'error'].includes(status)) return 'failed';
+  // The existing failed filter includes work needing attention, not just terminal failures.
+  // An uncertain submission is paused for inspection; it must not look actively running.
+  if (['failed', 'cancelled', 'canceled', 'blocked', 'error', 'media_failed', 'submitted_unknown'].includes(status)) return 'failed';
   return 'active';
 }
 
@@ -159,6 +163,55 @@ function toItem(task, media, context, source, type) {
   };
 }
 
+function executionItems(db, episode, context) {
+  if (!hasExecutionSchema(db)) return [];
+  // Select display fields only: connection credentials, frozen inputs and provider
+  // responses never enter this view. The node and plan must both belong to this episode.
+  const rows = db.prepare(`
+    SELECT n.id, n.plan_id, n.storyboard_id, n.model_id, n.status, n.blocking_reasons,
+      n.version_id, n.updated_at, p.status AS plan_status, p.started_at,
+      a.id AS attempt_id, a.status AS attempt_status, a.task_id, a.prompt_id, a.error,
+      v.video_url, v.local_path
+    FROM video_execution_nodes n
+    JOIN video_execution_plans p ON p.id = n.plan_id
+    JOIN storyboards sb ON sb.id = n.storyboard_id AND sb.episode_id = p.episode_id AND sb.deleted_at IS NULL
+    LEFT JOIN video_execution_attempts a ON a.node_id = n.id
+    LEFT JOIN video_plan_versions v ON v.id = n.version_id AND v.storyboard_id = n.storyboard_id AND v.status = 'completed'
+    WHERE p.episode_id = ? AND p.drama_id = ? AND p.started_at IS NOT NULL AND p.status <> 'preview'
+  `).all(episode.id, episode.drama_id);
+  const messages = {
+    ready: '等待执行', queued: '已加入执行队列', waiting_dependency: '等待上游镜头完成',
+    preflighting: '正在检查执行条件', submitting: '正在提交任务，请勿重复提交',
+    processing: '任务已提交，正在查询生成状态', materializing: '生成已完成，正在保存视频',
+    completed: '视频已生成，可在执行计划中查看版本', blocked: '执行被阻挡，请查看执行计划',
+    failed: '生成失败，请查看执行计划', media_failed: '视频保存失败，请查看执行计划',
+    submitted_unknown: '提交结果未知，请勿重复提交；请查看执行计划核查',
+  };
+  return rows.filter((row) => context.storyboards.has(row.storyboard_id)).map((row) => {
+    const target = context.storyboards.get(row.storyboard_id);
+    const reasons = parseJSON(row.blocking_reasons);
+    const blockingReasons = Array.isArray(reasons) ? reasons.filter((reason) => typeof reason === 'string') : [];
+    const status = row.status === 'processing' && row.attempt_status === 'materializing' ? 'materializing' : row.status;
+    return {
+      id: `video-execution:${row.id}`, type: 'video_execution', source: 'video', status,
+      // Provider polling does not supply a percentage. Do not infer one from lifecycle stages.
+      progress: null, message: messages[status] || null,
+      error: row.error || (bucket(status) === 'failed' ? blockingReasons.join('；') || null : null),
+      blocking_reasons: blockingReasons,
+      resource_id: target.resource_id, resource_type: target.resource_type, task_resource_id: null,
+      label: `视频执行 · ${target.detail}`, provider: 'comfyui', model: row.model_id, generation_id: null,
+      thumbnail_url: target.thumbnail_url || null,
+      result_url: status === 'completed' ? publicUrl(row.local_path || row.video_url) : null,
+      // Submission, not preview creation, is when this task enters the task center.
+      created_at: row.started_at, updated_at: row.updated_at,
+      finished_at: ['completed', 'failed', 'media_failed', 'blocked', 'cancelled'].includes(status) ? row.updated_at : null,
+      scope: 'episode', execution_plan_id: row.plan_id, execution_node_id: row.id,
+      execution_plan_status: row.plan_status, execution_attempt_id: row.attempt_id || null,
+      provider_task_id: row.task_id || null, prompt_id: row.prompt_id || null, version_id: row.version_id,
+    };
+  });
+}
+
 function listEpisodeTasks(db, episodeIdValue, query = {}) {
   const episodeId = positiveInteger(episodeIdValue, 'episodeId');
   const page = positiveInteger(query.page, 'page', 1);
@@ -266,6 +319,9 @@ function listEpisodeTasks(db, episodeIdValue, query = {}) {
     const item = toItem(null, row, context.episode, 'video', 'video_merge');
     items.set(item.id, item);
   }
+  // Execution records remain owned by the plan runner. Reading the task center
+  // never mirrors them into async_tasks or creates another executable task.
+  for (const item of executionItems(db, episode, context)) items.set(item.id, item);
   const all = [...items.values()].sort(newestFirst);
   const stats = { active: 0, completed: 0, failed: 0 };
   for (const item of all) stats[bucket(item.status)] += 1;

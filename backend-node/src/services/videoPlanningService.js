@@ -222,9 +222,21 @@ function getStoryboardVideoPlan(db, id, options = {}) {
     validation: result,
     selected_version_id: row?.selected_version_id || null,
     adoption_revision: row?.adoption_revision || 0,
-    last_execution: json(row?.last_execution_json),
+    last_execution: getLatestVideoExecution(db, storyboard.id, row?.last_execution_json),
     content_fingerprint: getStoryboardContentFingerprint(db, storyboard.id),
   };
+}
+function getLatestVideoExecution(db, storyboardId, cached) {
+  if (!hasTable(db, 'video_execution_nodes') || !hasTable(db, 'video_execution_plans')) return json(cached);
+  // Read the durable node, including the queued/preflight window before the
+  // execution summary is written. A later preview must not hide a running job.
+  const node = db.prepare(`SELECT n.id AS node_id,n.plan_id,n.status,n.model_id,n.version_id,n.blocking_reasons,n.updated_at
+    FROM video_execution_nodes n JOIN video_execution_plans p ON p.id=n.plan_id
+    WHERE n.storyboard_id=? AND p.started_at IS NOT NULL AND p.status!='preview'
+    ORDER BY CASE WHEN n.status IN ('queued','waiting_dependency','preflighting','submitting','processing','materializing') THEN 0
+      WHEN n.status='submitted_unknown' THEN 1 ELSE 2 END,
+      p.started_at DESC,n.created_at DESC,n.id DESC LIMIT 1`).get(storyboardId);
+  return node ? { ...node, blocking_reasons: json(node.blocking_reasons, []) } : null;
 }
 function getEpisodeVideoPlans(db, episodeId, options = {}) {
   return { items: episodeStoryboards(db, episodeId).map((row) => getStoryboardVideoPlan(db, row.id, options)), capabilities_version: catalog.getVideoWorkflowCatalog().version };

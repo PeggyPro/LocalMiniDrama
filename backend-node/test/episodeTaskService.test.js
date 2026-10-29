@@ -54,6 +54,28 @@ function addVideo(db, id, extra = {}) {
   });
 }
 
+function addExecution(db, id, { planId = `plan-${id}`, plan = {}, node = {}, attempt = null } = {}) {
+  if (!db.prepare('SELECT 1 FROM video_execution_plans WHERE id = ?').get(planId)) {
+    insert(db, 'video_execution_plans', {
+      id: planId, episode_id: 10, drama_id: 1, status: 'running',
+      created_at: '2026-04-01T00:00:00Z', started_at: CREATED, updated_at: CREATED, ...plan,
+    });
+  }
+  insert(db, 'video_execution_nodes', {
+    id, plan_id: planId, position: 0, storyboard_id: 100, model_id: 'h3-standard',
+    choice_revision: 1, content_fingerprint: 'test-fingerprint',
+    choice_snapshot: '{"private":"choice-secret"}', inputs: '{"prompt":"private-input"}',
+    workflow_snapshot: '{"private":"workflow-secret"}', connection_snapshot: '{"api_key":"node-secret"}',
+    status: 'processing', blocking_reasons: '[]', created_at: '2026-04-01T00:00:00Z', updated_at: CREATED,
+    ...node,
+  });
+  if (attempt) insert(db, 'video_execution_attempts', {
+    id: `attempt-${id}`, node_id: id, operation_id: `operation-${id}`, status: 'processing',
+    connection_snapshot: '{"api_key":"attempt-secret"}', response: '{"private":"response-secret"}',
+    created_at: CREATED, updated_at: CREATED, ...attempt,
+  });
+}
+
 function allItems(db, episodeId = 10) {
   return listEpisodeTasks(db, episodeId, { limit: 100 }).items;
 }
@@ -289,6 +311,142 @@ test('query-only SQLite accepts repeated reads and no stored rows or schema chan
   assert.deepEqual(db.serialize(), before);
   assert.equal(db.prepare('SELECT total_changes() AS count').get().count, changesBefore);
   assert.equal(db.prepare('SELECT status, progress FROM async_tasks WHERE id = ?').get('still-running').progress, 45);
+});
+
+test('submitted execution nodes appear through the task route without writing or exposing private snapshots', (t) => {
+  const db = createDb(t);
+  addTask(db, 'same-id', 'storyboard_generation', 10);
+  const oldTask = db.prepare('SELECT * FROM async_tasks WHERE id = ?').get('same-id');
+  addExecution(db, 'same-id', { attempt: { task_id: 'provider-task', prompt_id: 'native-prompt' } });
+  addExecution(db, 'preview', { plan: { status: 'preview', started_at: null }, node: { status: 'ready' } });
+  addExecution(db, 'never-started', { plan: { status: 'blocked', started_at: null }, node: { status: 'blocked' } });
+  const before = db.serialize();
+  const changesBefore = db.prepare('SELECT total_changes() AS count').get().count;
+  db.pragma('query_only = ON');
+  const route = taskRoutes(db, { errorw() {} });
+  const res = makeResponse();
+  route.getEpisodeTasks({ params: { episodeId: '10' }, query: { status: 'active' } }, res);
+  assert.equal(res.statusCode, 200);
+  const data = res.payload.data;
+  assert.equal(data.total, 2);
+  assert.equal(data.filtered_total, 2);
+  assert.deepEqual(data.stats, { active: 2, completed: 0, failed: 0 });
+  const item = data.items.find((row) => row.id === 'video-execution:same-id');
+  assert.equal(item.type, 'video_execution');
+  assert.equal(item.source, 'video');
+  assert.equal(item.status, 'processing');
+  assert.equal(item.progress, null);
+  assert.equal(item.resource_id, '100');
+  assert.equal(item.resource_type, 'storyboard');
+  assert.equal(item.scope, 'episode');
+  assert.equal(item.model, 'h3-standard');
+  assert.equal(item.execution_plan_id, 'plan-same-id');
+  assert.equal(item.execution_node_id, 'same-id');
+  assert.equal(item.execution_plan_status, 'running');
+  assert.equal(item.execution_attempt_id, 'attempt-same-id');
+  assert.equal(item.provider_task_id, 'provider-task');
+  assert.equal(item.prompt_id, 'native-prompt');
+  assert.equal(item.created_at, CREATED, 'submission time, not preview creation, determines ordering');
+  assert.equal(item.result_url, null);
+  assert.equal(item.finished_at, null);
+  assert.doesNotMatch(JSON.stringify(data), /secret|private-input|connection_snapshot|workflow_snapshot|choice_snapshot|"response"/);
+  // Virtual records are not executable/cancellable async_tasks and never replace legacy records.
+  const missing = makeResponse();
+  route.getTaskStatus({ params: { task_id: item.id } }, missing);
+  assert.equal(missing.statusCode, 404);
+  assert.deepEqual(db.prepare('SELECT * FROM async_tasks WHERE id = ?').get('same-id'), oldTask);
+  assert.deepEqual(listEpisodeTasks(db, 10, { status: 'active' }), data);
+  assert.deepEqual(db.serialize(), before);
+  assert.equal(db.prepare('SELECT total_changes() AS count').get().count, changesBefore);
+});
+
+test('execution scope requires matching project, episode and live storyboard, including every node of a plan', (t) => {
+  const db = createDb(t);
+  insert(db, 'storyboards', { id: 102, episode_id: 10, storyboard_number: 2 });
+  insert(db, 'storyboards', { id: 103, episode_id: 10, storyboard_number: 3, deleted_at: CREATED });
+  addExecution(db, 'own-first', { planId: 'own-plan' });
+  addExecution(db, 'own-next', { planId: 'own-plan', node: { storyboard_id: 102, position: 1, status: 'waiting_dependency' } });
+  addExecution(db, 'other-episode', { plan: { episode_id: 11 }, node: { storyboard_id: 101 } });
+  addExecution(db, 'foreign-project', { plan: { episode_id: 1, drama_id: 2 }, node: { storyboard_id: 200 } });
+  addExecution(db, 'wrong-drama', { plan: { drama_id: 2 } });
+  addExecution(db, 'wrong-episode', { plan: { episode_id: 11 } });
+  addExecution(db, 'wrong-board', { node: { storyboard_id: 101 } });
+  addExecution(db, 'foreign-board', { node: { storyboard_id: 200 } });
+  addExecution(db, 'deleted-board', { node: { storyboard_id: 103 } });
+  addExecution(db, 'missing-board', { node: { storyboard_id: 999 } });
+  assert.deepEqual(new Set(allItems(db).map((item) => item.execution_node_id)), new Set(['own-first', 'own-next']));
+  assert.deepEqual(allItems(db, 11).map((item) => item.execution_node_id), ['other-episode']);
+  assert.deepEqual(allItems(db, 1).map((item) => item.execution_node_id), ['foreign-project']);
+  db.prepare('UPDATE episodes SET deleted_at = ? WHERE id = 11').run(CREATED);
+  assert.equal(listEpisodeTasks(db, 11), null);
+  db.prepare('UPDATE dramas SET deleted_at = ? WHERE id = 1').run(CREATED);
+  assert.equal(listEpisodeTasks(db, 10), null);
+});
+
+test('execution states participate in mixed ordering, filtering, totals and paging without invented percentages', (t) => {
+  const db = createDb(t);
+  addTask(db, 'old-active', 'storyboard_generation', 10, { created_at: '2026-05-01T09:00:00Z' });
+  addVideo(db, 1, { status: 'completed', created_at: '2026-05-01T08:00:00Z' });
+  const statuses = ['queued', 'waiting_dependency', 'preflighting', 'submitting', 'processing', 'completed', 'media_failed', 'failed', 'blocked', 'submitted_unknown'];
+  for (const [index, status] of statuses.entries()) {
+    addExecution(db, `state-${index}`, {
+      plan: { started_at: `2026-05-01T10:${String(index).padStart(2, '0')}:00Z` },
+      node: { status, blocking_reasons: ['blocked', 'submitted_unknown'].includes(status) ? '["inspect_required"]' : '[]' },
+      attempt: status === 'processing' ? { status: 'materializing' } : null,
+    });
+  }
+  const first = listEpisodeTasks(db, 10, { status: 'failed', limit: 2 });
+  const next = listEpisodeTasks(db, 10, { status: 'failed', limit: 2, page: 2 });
+  assert.equal(first.total, 12);
+  assert.equal(first.filtered_total, 4);
+  assert.deepEqual(first.stats, { active: 6, completed: 2, failed: 4 });
+  assert.deepEqual(next.stats, first.stats);
+  assert.deepEqual(first.items.map((item) => item.status), ['submitted_unknown', 'blocked']);
+  assert.deepEqual(next.items.map((item) => item.status), ['failed', 'media_failed']);
+  assert.match(first.items[0].message, /请勿重复提交/);
+  assert.deepEqual(first.items[0].blocking_reasons, ['inspect_required']);
+  assert.equal(first.items[0].error, 'inspect_required');
+  assert.ok(first.items.every((item) => item.progress === null));
+  const active = listEpisodeTasks(db, 10, { status: 'active', limit: 2 });
+  assert.deepEqual(active.items.map((item) => item.status), ['materializing', 'submitting']);
+  assert.equal(active.filtered_total, 6);
+  assert.equal(listEpisodeTasks(db, 10, { status: 'completed' }).filtered_total, 2);
+  assert.deepEqual(listEpisodeTasks(db, 10, { status: 'failed', page: 3, limit: 2 }).items, []);
+});
+
+test('completed execution output resolves only its exact owned completed version and keeps safe failure details', (t) => {
+  const db = createDb(t);
+  for (const [id, storyboardId, status] of [['own-version', 100, 'completed'], ['foreign-version', 200, 'completed'], ['unfinished-version', 100, 'processing']]) {
+    insert(db, 'video_plan_versions', {
+      id, storyboard_id: storyboardId, model_id: 'h3-standard', tail_segment_id: `tail-${id}`,
+      segment_ids: '[]', status, video_url: `https://example.invalid/${id}.mp4`,
+      local_path: `videos/${id}.mp4`, created_at: CREATED,
+    });
+  }
+  addExecution(db, 'completed', { node: { status: 'completed', version_id: 'own-version' }, attempt: { status: 'completed', task_id: 'completed-task' } });
+  addExecution(db, 'wrong-version', { node: { status: 'completed', version_id: 'foreign-version' } });
+  addExecution(db, 'unfinished', { node: { status: 'completed', version_id: 'unfinished-version' } });
+  addExecution(db, 'running', { node: { status: 'processing', version_id: 'own-version' } });
+  addExecution(db, 'failed', { node: { status: 'failed' }, attempt: { status: 'failed', error: 'safe persisted provider failure' } });
+  addVideo(db, 99, { status: 'completed', video_url: 'https://example.invalid/unrelated-latest.mp4' });
+  const executions = allItems(db).filter((item) => item.type === 'video_execution');
+  const done = executions.find((item) => item.execution_node_id === 'completed');
+  assert.equal(done.result_url, '/static/videos/own-version.mp4');
+  assert.equal(done.version_id, 'own-version');
+  assert.equal(done.provider_task_id, 'completed-task');
+  assert.equal(done.finished_at, CREATED);
+  for (const id of ['wrong-version', 'unfinished', 'running']) {
+    assert.equal(executions.find((item) => item.execution_node_id === id).result_url, null, id);
+  }
+  assert.equal(executions.find((item) => item.execution_node_id === 'failed').error, 'safe persisted provider failure');
+});
+
+test('legacy databases without execution tables still have a query-only task view', (t) => {
+  const db = createDb(t);
+  db.exec('DROP TABLE video_execution_attempts; DROP TABLE video_execution_nodes; DROP TABLE video_execution_plans; DROP TABLE video_plan_versions;');
+  addTask(db, 'legacy', 'storyboard_generation', 10);
+  db.pragma('query_only = ON');
+  assert.deepEqual(allItems(db).map((item) => item.id), ['legacy']);
 });
 
 test('route returns the existing success envelope, rejects bad input and hides deleted episodes', (t) => {

@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { parse, compileScript } from 'vue/compiler-sfc'
-import { hasVideoPlanning, planningErrorMessage, videoRecordUrl } from '../src/utils/videoPlanning.js'
+import { hasVideoPlanning, planningErrorMessage, videoRecordUrl, activeExecution } from '../src/utils/videoPlanning.js'
 
 const { descriptor } = parse(readFileSync(new URL('../src/views/FilmCreate.vue', import.meta.url), 'utf8'))
 const compiled = compileScript(descriptor, { id: 'planning-editor-test' })
@@ -33,6 +33,22 @@ test('main player respects adopted version and exact saved history, never latest
   assert.equal(editor.getSbVideo(10), null)
   state.sources.versions = [{ id: 'not-loaded', video_url: 'https://host/adopted.mp4' }]
   assert.equal(editor.getSbVideo(10).video_url, 'https://host/adopted.mp4')
+})
+
+test('actual editor spinner includes persisted plan execution and stops at terminal states', () => {
+  const state = { items: { 10: { last_execution: { status: 'processing' } } } }
+  const generatingSbVideoIds = new Set([11])
+  const { isSbVideoGenerating } = handlers(['isSbVideoGenerating'], {
+    videoPlanning: { state }, activeExecution, generatingSbVideoIds,
+    dramaId: { value: 1 }, currentEpisodeId: { value: 1 }, genStore: { isRunning: () => false },
+    GEN_RESOURCE: { SB_VIDEO: 'sb_video' },
+  })
+  assert.equal(isSbVideoGenerating(10), true)
+  assert.equal(isSbVideoGenerating(11), true, 'legacy generation still shows its spinner')
+  for (const status of ['completed', 'failed', 'blocked', 'submitted_unknown']) {
+    state.items[10].last_execution.status = status
+    assert.equal(isSbVideoGenerating(10), false, status)
+  }
 })
 
 test('actual single-shot handler routes planned shots to finite preview without touching legacy generation', async () => {

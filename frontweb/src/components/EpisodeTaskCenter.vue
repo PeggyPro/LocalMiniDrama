@@ -89,11 +89,15 @@
                 <span :style="taskProgress(task) == null ? {} : { width: taskProgress(task) + '%' }" />
               </div>
             </div>
-            <p v-else-if="task.message && !task.error" class="task-result-message">{{ task.message }}</p>
+            <p v-else-if="task.message" class="task-result-message">{{ task.message }}</p>
             <details v-if="task.error" class="task-error-detail">
               <summary><el-icon><WarningFilled /></el-icon><span>{{ task.error }}</span><span class="task-error-expand">详情</span></summary>
               <p>{{ task.error }}</p>
             </details>
+            <div v-if="task.execution_plan_id" class="task-plan-link">
+              <span class="task-id" :title="task.execution_plan_id">计划 {{ task.execution_plan_id }}</span>
+              <el-button size="small" @click="openPlan(task.execution_plan_id)">查看执行计划</el-button>
+            </div>
             <div class="task-record-footer">
               <span class="task-id" :title="String(task.id)">#{{ task.id }}</span>
               <span v-if="task.scope === 'shared'" class="task-scope" title="素材被本集引用，其生成记录可能来自其他集">共享素材</span>
@@ -124,7 +128,9 @@ const props = defineProps({
   episodeId: { type: [Number, String], required: true },
   episodeNumber: { type: [Number, String], default: '' },
   episodeTitle: { type: String, default: '' },
+  refreshKey: { type: [Number, String], default: 0 },
 })
+const emit = defineEmits(['open-plan'])
 const opened = ref(false)
 const now = ref(Date.now())
 const failedImages = reactive({})
@@ -136,7 +142,7 @@ const filters = computed(() => [
   { value: 'all', label: '全部', count: state.value.total },
   { value: 'active', label: '进行中', count: state.value.stats.active },
   { value: 'completed', label: '已完成', count: state.value.stats.completed },
-  { value: 'failed', label: '失败 / 取消', count: state.value.stats.failed },
+  { value: 'failed', label: '异常 / 取消', count: state.value.stats.failed },
 ])
 const selectedFilterLabel = computed(() => filters.value.find(item => item.value === state.value.filter)?.label || '')
 const episodeLabel = computed(() => `${props.episodeNumber ? '第 ' + props.episodeNumber + ' 集' : '当前集'}${props.episodeTitle ? ' · ' + props.episodeTitle : ''}`)
@@ -145,6 +151,11 @@ const updatedLabel = computed(() => state.value.updatedAt ? new Date(state.value
 function openDrawer() {
   opened.value = true
   reader.refresh()
+}
+
+function openPlan(planId) {
+  opened.value = false
+  emit('open-plan', planId)
 }
 
 function formatCreatedAt(value) {
@@ -157,6 +168,8 @@ watch(() => [props.dramaId, props.episodeId], ([dramaId, episodeId]) => {
   for (const key of Object.keys(failedImages)) delete failedImages[key]
   reader.setContext(dramaId, episodeId)
 }, { immediate: true })
+
+watch(() => props.refreshKey, () => reader.refresh({ force: true }))
 
 let timer
 let lastAttempt = 0
@@ -235,6 +248,8 @@ onBeforeUnmount(() => {
 .task-progress-track > span { display: block; height: 100%; background: var(--el-color-primary); border-radius: inherit; transition: width .4s; }
 .task-progress-track.indeterminate > span { width: 35%; animation: task-progress-slide 1.8s ease-in-out infinite; }
 .task-result-message { color: var(--text-subtle); font-size: 14px; margin: 12px 0 0; line-height: 1.6; overflow-wrap: anywhere; }
+.task-plan-link { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; }
+.task-plan-link .el-button { flex-shrink: 0; }
 .task-record-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid var(--border-color); padding-top: 11px; margin-top: 13px; }
 .task-id { min-width: 0; max-width: 75%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, monospace; color: var(--text-subtle); font-size: 11px; }
 .task-scope { color: var(--text-subtle); border: 1px solid var(--border-color); border-radius: 4px; padding: 2px 5px; font-size: 12px; flex-shrink: 0; }

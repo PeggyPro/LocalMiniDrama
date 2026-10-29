@@ -47,6 +47,8 @@
             :episode-id="currentEpisodeId"
             :episode-number="currentEpisode?.episode_number"
             :episode-title="currentEpisode?.title || ''"
+            :refresh-key="videoExecutionRefreshKey"
+            @open-plan="videoPlanning.openPlan"
           />
           <el-button class="btn-theme" :title="isDark ? '切换到浅色模式' : '切换到暗色模式'" @click="toggleTheme">
             <el-icon><Sunny v-if="isDark" /><Moon v-else /></el-icon>
@@ -1546,13 +1548,14 @@
                 </div>
                 <span v-if="isSbVideoGenerating(sb.id)" class="sb-video-regenerating-overlay">
                   <el-icon class="is-loading"><Loading /></el-icon>
-                  正在重新生成...
+                  {{ activeExecution(videoPlanning.state.items[sb.id]?.last_execution) ? executionLabel(videoPlanning.state.items[sb.id].last_execution) : '正在重新生成...' }}
                 </span>
               </div>
               <div v-else class="sb-video-area sb-video-placeholder">
                 <span v-if="isSbVideoGenerating(sb.id)" class="sb-video-generating-text">
                   <el-icon class="is-loading"><Loading /></el-icon>
-                  正在生成视频...
+                  {{ activeExecution(videoPlanning.state.items[sb.id]?.last_execution) ? executionLabel(videoPlanning.state.items[sb.id].last_execution) : '正在生成视频...' }}
+                  <el-button v-if="videoPlanning.state.items[sb.id]?.last_execution?.plan_id" link type="primary" @click="videoPlanning.openPlan(videoPlanning.state.items[sb.id].last_execution.plan_id)">查看执行计划</el-button>
                 </span>
                 <template v-else>
                   <div v-if="getSbVideoError(sb.id)" class="sb-video-error">
@@ -2720,7 +2723,7 @@ import { videoPlanningAPI } from '@/api/videoPlanning'
 import { useVideoPlanning } from '@/components/videoPlanning/useVideoPlanning'
 import StoryboardVideoPlanning from '@/components/videoPlanning/StoryboardVideoPlanning.vue'
 import VideoPlanDialog from '@/components/videoPlanning/VideoPlanDialog.vue'
-import { hasVideoPlanning, planningErrorMessage, videoRecordUrl } from '@/utils/videoPlanning'
+import { hasVideoPlanning, planningErrorMessage, videoRecordUrl, activeExecution, executionLabel } from '@/utils/videoPlanning'
 import { storyboardsAPI } from '@/api/storyboards'
 import { uploadAPI } from '@/api/upload'
 import { characterLibraryAPI } from '@/api/characterLibrary'
@@ -2958,6 +2961,8 @@ const videoPlanning = useVideoPlanning({
     ElMessage.success('已采用此规划版本；后续生成不会自动替换它')
   },
 })
+const videoExecutionRefreshKey = computed(() => Object.values(videoPlanning.state.items)
+  .map((item) => `${item.storyboard_id}:${item.last_execution?.node_id || ''}:${item.last_execution?.status || ''}`).join('|'))
 watch(storyboards, () => { videoPlanning.refresh() })
 const videoProgress = computed(() => store.videoProgress)
 const videoStatus = computed(() => store.videoStatus)
@@ -4128,6 +4133,7 @@ function buildSbGenMeta(sb, resourceType, labelPrefix) {
 
 /** 分镜视频是否正在生成（单条点击、批量、一键成片、任务恢复均覆盖） */
 function isSbVideoGenerating(sbId) {
+  if (activeExecution(videoPlanning.state.items[sbId]?.last_execution)) return true
   if (generatingSbVideoIds.has(sbId)) return true
   if (sbId == null || dramaId.value == null || currentEpisodeId.value == null) return false
   return genStore.isRunning({

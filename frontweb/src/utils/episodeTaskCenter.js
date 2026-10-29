@@ -25,8 +25,11 @@ export function createEpisodeTaskReader({ load, onChange = () => {} }) {
     controller = null
   }
 
-  async function refresh() {
-    if (disposed || !state.episodeId || state.loading) return
+  async function refresh({ force = false } = {}) {
+    if (disposed || !state.episodeId || (state.loading && !force)) return
+    // A newly submitted plan must supersede an older in-flight display request.
+    // This only aborts the list fetch; it never touches the execution itself.
+    if (force) invalidate()
     const requestRevision = revision
     const { dramaId, episodeId, page, filter } = state
     const requestController = new AbortController()
@@ -96,12 +99,13 @@ export function createEpisodeTaskReader({ load, onChange = () => {} }) {
   return { refresh, setContext, setFilter, setPage, dispose }
 }
 
-const ACTIVE_STATUSES = new Set(['pending', 'queued', 'running', 'processing', 'downloading'])
+const ACTIVE_STATUSES = new Set(['pending', 'queued', 'running', 'processing', 'downloading', 'ready', 'waiting_dependency', 'preflighting', 'submitting', 'submitted', 'materializing'])
 
 export function taskStatusGroup(status) {
   if (ACTIVE_STATUSES.has(status)) return 'active'
   if (status === 'completed') return 'completed'
-  if (['failed', 'cancelled', 'blocked'].includes(status)) return 'failed'
+  // Paused/uncertain submissions share the API's attention bucket, never a running spinner.
+  if (['failed', 'cancelled', 'blocked', 'media_failed', 'submitted_unknown'].includes(status)) return 'failed'
   return 'unknown'
 }
 
@@ -109,6 +113,8 @@ export function taskStatusLabel(status) {
   return {
     pending: '等待中', queued: '排队中', running: '生成中', processing: '生成中',
     downloading: '保存中', completed: '已完成', failed: '失败', cancelled: '已取消', blocked: '已阻挡',
+    ready: '等待执行', waiting_dependency: '等待上游', preflighting: '执行检查中', submitting: '提交中',
+    submitted: '已提交', materializing: '保存中', media_failed: '保存失败', submitted_unknown: '提交结果未知',
   }[status] || status || '未知状态'
 }
 

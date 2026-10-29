@@ -4,7 +4,7 @@ export const planningStateLabels = {
   preview: '待确认预览', running: '执行中', pending: '待执行', queued: '排队中',
   submitted: '已提交', submitted_unknown: '提交结果未知 · 请勿重复提交',
   completed: '已完成', failed: '失败', partial: '部分完成', cancelled: '已取消',
-  preflighting: '检查运行条件', submitting: '提交中', processing: '生成中', media_failed: '产物处理失败',
+  preflighting: '检查运行条件', submitting: '提交中', processing: '生成中', materializing: '保存视频中', media_failed: '产物处理失败',
 }
 export const stateLabel = (value) => planningStateLabels[value] || value || '未知'
 const blockingReasonLabels = {
@@ -145,6 +145,14 @@ export function makePreviewBody({ episodeId, storyboards, inputs, configId, appe
 }
 
 export const activePlan = (plan) => ['running', 'queued', 'submitted', 'pending'].includes(plan?.status)
+// These are execution states, not the readiness of a recommended workflow.
+export const activeExecution = (execution) => ['pending', 'queued', 'waiting', 'waiting_dependency', 'preflighting', 'submitting', 'submitted', 'processing', 'materializing', 'running'].includes(execution?.status)
+export function executionLabel(execution) {
+  if (execution?.blocking_reasons?.includes('known_task_query_failed_resume_available')) return '任务查询异常 · 请查看执行计划'
+  if (execution?.status === 'completed') return '生成已完成 · 请在「版本 / 采用」中选片'
+  if (execution?.status === 'materializing') return '正在保存视频'
+  return stateLabel(execution?.status)
+}
 export function canRunPlan(plan) {
   return !!plan?.id && plan.status === 'preview' &&
     (plan.nodes || []).some((n) => n.status === 'ready' && !n.blocking_reasons?.length)

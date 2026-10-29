@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createEpisodeTaskReader, taskElapsed, taskKind, taskProgress, taskStatusGroup, taskTimestamp } from '../src/utils/episodeTaskCenter.js'
+import { createEpisodeTaskReader, taskElapsed, taskKind, taskProgress, taskStatusGroup, taskStatusLabel, taskTimestamp } from '../src/utils/episodeTaskCenter.js'
 
 function deferred() {
   let resolve, reject
@@ -144,6 +144,75 @@ test('SQLite UTC timestamps and elapsed time include waiting without timezone dr
   assert.equal(taskElapsed({ status: 'failed', created_at: start, updated_at: '2026-05-10 11:59:00' }), '')
   assert.equal(taskElapsed({ status: 'completed', created_at: start }), '')
 })
+
+test('execution lifecycle stages have accurate labels and uncertain submissions never show running progress', () => {
+  for (const status of ['ready', 'queued', 'waiting_dependency', 'preflighting', 'submitting', 'submitted', 'processing', 'materializing']) {
+    assert.equal(taskStatusGroup(status), 'active', status);
+    assert.notEqual(taskStatusLabel(status), status);
+  }
+  for (const status of ['blocked', 'media_failed', 'submitted_unknown']) {
+    assert.equal(taskStatusGroup(status), 'failed', status);
+    assert.notEqual(taskStatusLabel(status), status);
+  }
+  assert.equal(taskStatusLabel('submitted_unknown'), '提交结果未知');
+  assert.equal(taskStatusLabel('materializing'), '保存中');
+  assert.equal(taskProgress({ type: 'video_execution', status: 'processing', progress: null }), null);
+  assert.equal(taskKind({ type: 'video_execution', source: 'video' }), 'video');
+});
+
+test('task-center refresh preserves exact plan identity while an execution moves to completion', async () => {
+  let state, completed = false;
+  const node = {
+    id: 'video-execution:node-1', type: 'video_execution', source: 'video',
+    execution_plan_id: 'frozen-plan-1', execution_node_id: 'node-1', provider_task_id: 'known-task',
+    prompt_id: 'known-prompt', progress: null,
+  };
+  const requests = [];
+  const reader = createEpisodeTaskReader({
+    load: async (episodeId, options) => {
+      requests.push({ episodeId, ...options });
+      return {
+        ...result(episodeId, [{ ...node, status: completed ? 'completed' : 'processing' }]),
+        stats: { active: completed ? 0 : 1, completed: completed ? 1 : 0, failed: 0 },
+      };
+    },
+    onChange: value => { state = value; },
+  });
+  await reader.setContext(4, 10);
+  assert.equal(state.items[0].execution_plan_id, 'frozen-plan-1');
+  assert.equal(state.stats.active, 1);
+  completed = true;
+  await reader.refresh();
+  assert.equal(state.items[0].status, 'completed');
+  assert.equal(state.items[0].id, node.id);
+  assert.equal(state.items[0].execution_plan_id, 'frozen-plan-1');
+  assert.equal(state.items[0].provider_task_id, 'known-task');
+  assert.equal(state.stats.active, 0);
+  assert.equal(state.stats.completed, 1);
+  assert.equal(requests.length, 2);
+  reader.dispose();
+});
+
+test('submission refresh supersedes a pending display fetch and ignores its stale response', async () => {
+  const requests = [];
+  let state;
+  const reader = createEpisodeTaskReader({
+    load: (episodeId, options) => { const request = { episodeId, options, ...deferred() }; requests.push(request); return request.promise; },
+    onChange: value => { state = value; },
+  });
+  const oldFetch = reader.setContext(4, 10);
+  const submittedFetch = reader.refresh({ force: true });
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].options.signal.aborted, true);
+  requests[1].resolve(result(10, [{ id: 'video-execution:new-node', execution_plan_id: 'new-plan' }]));
+  await submittedFetch;
+  requests[0].resolve(result(10, []));
+  await oldFetch;
+  assert.equal(state.items[0].execution_plan_id, 'new-plan');
+  assert.equal(state.stats.active, 1);
+  assert.equal(state.loading, false);
+  reader.dispose();
+});
 
 test('media and merge records use distinct preview categories', () => {
   assert.equal(taskKind({ source: 'image', type: 'image_generation' }), 'image')
