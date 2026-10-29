@@ -6,8 +6,8 @@ import * as comfyUI from '../src/utils/comfyUIConfig.js'
 import * as reasoning from '../src/utils/reasoningSettings.js'
 import { canUseUniversalOmniVideoApi } from '../src/utils/videoOmniSupport.js'
 
-const { COMFYUI_H3_MODEL: H3, COMFYUI_WAN_MODEL: WAN, COMFYUI_VIDEO_PRESET: preset,
-  getComfyUIVideoModel, isNativeComfyUIVideoConfig, buildAIConnectionTestPayload } = comfyUI
+const { COMFYUI_H3_MODEL: H3, COMFYUI_WAN_MODEL: WAN, COMFYUI_H3_MODELS: H3_MODELS, COMFYUI_VIDEO_PRESET: preset,
+  getComfyUIVideoModel, isComfyUIH3Model, getComfyUIVideoModelLabel, isNativeComfyUIVideoConfig, buildAIConnectionTestPayload } = comfyUI
 const nativeConfig = (extra = {}) => ({
   service_type: 'video', name: 'Comfyui', provider: 'ComfuUI',
   base_url: 'http://127.0.0.1:8188', api_key: '', api_protocol: '', endpoint: '', query_endpoint: '',
@@ -45,18 +45,31 @@ function validateKey(harness, key) {
   return result
 }
 
-test('native preset uses the two exact Firebao workflows and the source8188 URL', () => {
+test('native preset offers the three local H3 profiles and keeps the source8188 URL', () => {
   assert.equal(preset.id, 'comfyui')
+  assert.match(preset.name, /本地 H3.*标准.*文戏.*武戏/)
   assert.equal(preset.base_url, 'http://127.0.0.1:8188')
   assert.equal(preset.api_protocol, 'comfyui')
   assert.equal(preset.endpoint, '')
   assert.equal(preset.query_endpoint, '')
-  assert.deepEqual(preset.models, [H3, WAN])
+  assert.deepEqual(preset.models, ['h3-standard', 'h3-drama', 'h3-action'])
+})
+
+test('local H3 labels remain separate from exact model IDs and retain legacy recognition', () => {
+  for (const [model, label] of [['h3-standard', '本地 H3 标准'], ['h3-drama', '本地 H3 文戏'], ['h3-action', '本地 H3 武戏']]) {
+    assert.equal(isComfyUIH3Model(model), true)
+    assert.equal(getComfyUIVideoModelLabel(model), `${label}（${model}）`)
+  }
+  assert.equal(isComfyUIH3Model(H3), true)
+  for (const model of [WAN, 'h3-standard-other', 'H3-STANDARD', 'MiniMax-H3', '', null]) {
+    assert.equal(isComfyUIH3Model(model), false)
+    assert.equal(getComfyUIVideoModelLabel(model), model)
+  }
 })
 
 test('native inference supports saved typo provider, exact aliases and newline form models', () => {
   assert.equal(isNativeComfyUIVideoConfig(nativeConfig()), true)
-  for (const model of [H3, WAN]) {
+  for (const model of [...H3_MODELS, H3, WAN]) {
     assert.equal(isNativeComfyUIVideoConfig(nativeConfig({ name: '', provider: 'custom', model, default_model: '' })), true)
     assert.equal(isNativeComfyUIVideoConfig(nativeConfig({ name: '', provider: 'custom', model: undefined, modelText: `\n ${model}\n`, default_model: '' })), true)
   }
@@ -93,13 +106,14 @@ test('selected model honors overrides, saved defaults, nested lists and newline 
   assert.equal(getComfyUIVideoModel(null), '')
 })
 
-test('native H3 supports references automatically while switching default to Wan disables them', () => {
-  const config = nativeConfig()
-  assert.equal(canUseUniversalOmniVideoApi(config), true)
-  config.default_model = WAN
-  assert.equal(canUseUniversalOmniVideoApi(config), false)
-  config.default_model = H3
-  assert.equal(canUseUniversalOmniVideoApi(config), true)
+test('each local H3 profile and legacy H3 support references while switching to Wan disables them', () => {
+  const config = nativeConfig({ model: [...H3_MODELS, H3, WAN] })
+  for (const model of [...H3_MODELS, H3]) {
+    config.default_model = model
+    assert.equal(canUseUniversalOmniVideoApi(config), true, model)
+    config.default_model = WAN
+    assert.equal(canUseUniversalOmniVideoApi(config), false)
+  }
 })
 
 test('native Wan ignores legacy full-reference opt-ins in object and JSON settings', () => {
@@ -135,15 +149,23 @@ test('actual provider selection clears stale proxy paths and previews native Com
   harness.onProviderChange('comfyui')
   assert.equal(harness.form.value.base_url, preset.base_url)
   assert.equal(harness.form.value.api_protocol, 'comfyui')
-  assert.equal(harness.form.value.modelText, `${H3}\n${WAN}`)
-  assert.equal(harness.form.value.default_model, H3)
+  assert.equal(harness.form.value.modelText, H3_MODELS.join('\n'))
+  assert.equal(harness.form.value.default_model, 'h3-standard')
   assert.equal(harness.form.value.endpoint, '')
   assert.equal(harness.form.value.query_endpoint, '')
   assert.equal(harness.form.value.supports_universal_omni, true)
   assert.equal(harness.endpointPreviewInfo.value.submit, `${preset.base_url}/prompt`)
   assert.equal(harness.endpointPreviewInfo.value.query, `${preset.base_url}/history/{promptId}`)
   assert.equal(harness.endpointPreviewInfo.value.isComfyUI, true)
-  assert.match(harness.comfyUICapabilityHint.value, /9 张参考图.*首帧和尾帧/)
+  for (const model of [...H3_MODELS, H3]) {
+    harness.form.value.default_model = model
+    assert.match(harness.comfyUICapabilityHint.value, /9 张参考图.*独立首帧和尾帧/, model)
+  }
+  const modelLabels = [...component.matchAll(/<el-option v-for="m in (?:formModelList|availableModels)"[^>]*:label="([^"]+)"/g)]
+  assert.equal(modelLabels.length, 3, 'normal, locked and preset dropdowns expose profile labels')
+  for (const [, expression] of modelLabels) {
+    assert.equal(harness.evaluate(`((m) => (${expression}))('h3-drama')`), '本地 H3 文戏（h3-drama）')
+  }
   harness.form.value.default_model = WAN
   assert.match(harness.comfyUICapabilityHint.value, /单张首帧.*不支持尾帧或多图/)
 })
@@ -238,6 +260,16 @@ test('actual image connection test carries native protocol, default model and op
   assert.equal(harness.calls.length, 1)
   assert.deepEqual(harness.calls[0], row)
   assert.equal(harness.testResult.value, true)
+})
+
+test('actual openTest preserves each selected local H3 profile and optional native key', async () => {
+  const harness = formHarness()
+  for (const default_model of H3_MODELS) {
+    const config = nativeConfig({ model: H3_MODELS, default_model, api_protocol: 'comfyui', settings: null })
+    await harness.openTest(config)
+    assert.deepEqual(harness.calls.at(-1), config)
+    assert.equal(harness.testResult.value, true)
+  }
 })
 
 test('actual openTest forwards the selected Wan default together with all saved routing fields', async () => {

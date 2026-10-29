@@ -18,6 +18,12 @@ function routes(db, log) {
     create: (req, res) => {
       try {
         const body = req.body || {};
+        // Validate before persisting a task: legacy APIs may not bypass a saved video plan.
+        require('../services/legacyVideoPlanningGuard').assertLegacyGenerationAllowed(db, body.storyboard_id, body.model, body.drama_id);
+        const client = require('../services/videoClient');
+        const selectedConfig = client.getDefaultVideoConfig(db, body.model);
+        if (selectedConfig) require('../services/legacyVideoPlanningGuard').assertLegacyGenerationAllowed(db,
+          body.storyboard_id, client.getEffectiveModelFromConfig(selectedConfig, body.model), body.drama_id);
         const task = taskService.createTask(db, log, 'video_generation', String(body.drama_id || ''));
         const now = new Date().toISOString();
         const dramaId = Number(body.drama_id) || 0;
@@ -73,7 +79,7 @@ function routes(db, log) {
         response.created(res, item || { id: videoGenId, task_id: task.id, status: 'processing' });
       } catch (err) {
         log.error('videos create', { error: err.message });
-        response.internalError(res, err.message);
+        response.error(res, err.statusCode || 500, err.code || 'INTERNAL_ERROR', err.message);
       }
     },
     get: (req, res) => {

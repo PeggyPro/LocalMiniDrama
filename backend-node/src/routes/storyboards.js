@@ -275,7 +275,7 @@ function routes(db, log) {
         response.success(res, sb);
       } catch (err) {
         log.error('storyboards update', { error: err.message });
-        response.internalError(res, err.message);
+        response.error(res, err.statusCode || 500, err.code || 'INTERNAL_ERROR', err.message);
       }
     },
     delete: (req, res) => {
@@ -387,8 +387,14 @@ function routes(db, log) {
           db,
           log,
           req.params.episode_id,
-          req.query.model,
-          req.query.style
+          req.body?.model ?? req.query.model,
+          req.body?.style ?? req.query.style,
+          req.body?.storyboard_count,
+          req.body?.video_duration,
+          req.body?.aspect_ratio,
+          req.body?.include_narration,
+          req.body?.universal_omni,
+          req.body?.video_planning ?? req.query.video_planning
         );
         response.success(res, { task_id: taskId, status: 'pending', message: '分镜头生成任务已创建，正在后台处理...' });
       } catch (err) {

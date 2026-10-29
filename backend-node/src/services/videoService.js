@@ -314,7 +314,7 @@ async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, v
       ).run('completed', videoUrl, localPath, now, videoGenId);
     } else throw e;
   }
-  if (row.storyboard_id) {
+  if (row.storyboard_id && require('./legacyVideoPlanningGuard').canAutoAdoptLegacyVideo(db, row.storyboard_id)) {
     try {
       db.prepare('UPDATE storyboards SET video_url = ?, local_path = ?, updated_at = ? WHERE id = ?').run(
         videoUrl, localPath, now, row.storyboard_id
@@ -530,6 +530,8 @@ async function processVideoGeneration(db, log, videoGenId) {
   }
   const now = new Date().toISOString();
   try {
+    // Recheck at dispatch in case a plan was saved after the legacy request was queued.
+    require('./legacyVideoPlanningGuard').assertLegacyGenerationAllowed(db, row.storyboard_id, row.model, row.drama_id);
     db.prepare('UPDATE video_generations SET status = ?, updated_at = ? WHERE id = ?').run('processing', now, videoGenId);
     const loadConfig = require('../config').loadConfig;
     const cfg = loadConfig();
@@ -543,6 +545,8 @@ async function processVideoGeneration(db, log, videoGenId) {
       if (row.task_id) taskService.updateTaskError(db, row.task_id, '未配置视频模型');
       return;
     }
+    require('./legacyVideoPlanningGuard').assertLegacyGenerationAllowed(db, row.storyboard_id,
+      videoClient.getEffectiveModelFromConfig(config, row.model), row.drama_id);
     const isLocalComfyUI = videoClient.isNativeComfyUIConfig(config, row.model);
     let reference_urls = null;
     if (row.reference_image_urls) {

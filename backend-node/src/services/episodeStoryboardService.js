@@ -30,6 +30,18 @@ function normalizeStoryboardShotNumber(rawOrSb) {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
 }
 
+// AI rows, persistence and recommendation mapping must use the same first occurrence of each shot.
+function uniqueStoryboardAiItems(items) {
+  const seen = new Set();
+  return items.filter((item) => {
+    if (!isValidStoryboardFromAi(item)) return false;
+    const number = normalizeStoryboardShotNumber(item);
+    if (seen.has(number)) return false;
+    seen.add(number);
+    return true;
+  });
+}
+
 /** 同集相同 storyboard_number 多行时保留 id 最大的一条（通常为最新入库） */
 function dedupeStoryboardRowsByNumber(rows) {
   const byNum = new Map();
@@ -239,6 +251,7 @@ function getStoryboardsForEpisode(db, episodeId) {
       })(),
       composed_image: r.composed_image,
       video_url: r.video_url,
+      video_plan: require('./videoPlanningService').getStoryboardVideoPlan(db, r.id),
       audio_local_path: r.audio_local_path ?? null,
       narration_audio_local_path: r.narration_audio_local_path ?? null,
       status: r.status || 'pending',
@@ -483,7 +496,10 @@ function isValidStoryboardFromAi(sb) {
 
 function retirePreviousStoryboards(db, episodeId, ids, now) {
   const retire = db.prepare('UPDATE storyboards SET deleted_at = ? WHERE id = ? AND episode_id = ? AND deleted_at IS NULL');
-  for (const id of ids || []) retire.run(now, id, episodeId);
+  for (const id of ids || []) {
+    const result = retire.run(now, id, episodeId);
+    if (result.changes) require('./videoPlanningService').invalidateStoryboardVideoPlan(db, id, '来源分镜已重新生成或归档，请重新选择来源');
+  }
 }
 
 /**
@@ -714,23 +730,37 @@ function tryIncrementalSave(db, log, episodeIdNum, accumulated, savedNums, style
       try { parsed = JSON.parse(safeJson._jsonrepair(arrayCandidate)); } catch (_) {}
     }
     if (!parsed) return;
-    const items = Array.isArray(parsed) ? parsed : extractFirstArray(parsed);
-    if (!items || items.length === 0) return;
+    const items = uniqueStoryboardAiItems((Array.isArray(parsed) ? parsed : extractFirstArray(parsed)) || []);
+    if (items.length === 0) return;
     const now = new Date().toISOString();
     const newlySaved = db.transaction(() => {
       if (deriveOpts.assertCurrent) deriveOpts.assertCurrent();
-      const added = new Set();
+      const added = new Map();
       for (const sb of items) {
         if (!isValidStoryboardFromAi(sb)) continue;
         const shotNumber = normalizeStoryboardShotNumber(sb);
         if (savedNums.has(shotNumber) || added.has(shotNumber)) continue;
         const id = insertOneStoryboard(db, episodeIdNum, sb, style, videoRatio, now, deriveOpts);
-        if (id !== null) added.add(shotNumber);
+        if (id !== null) added.set(shotNumber, id);
       }
-      if (added.size > 0) retirePreviousStoryboards(db, episodeIdNum, deriveOpts.previousStoryboardIds, now);
+      if (added.size > 0) {
+        retirePreviousStoryboards(db, episodeIdNum, deriveOpts.previousStoryboardIds, now);
+        if (deriveOpts.videoPlanningContext) {
+          const ownedIds = new Map([...(deriveOpts.savedStoryboardIds || []), ...added]);
+          require('./videoPlanningService').applyStoryboardRecommendations(db, episodeIdNum, items, {
+            phase: 'draft',
+            generation_run_id: deriveOpts.generationRunId,
+            source_context: deriveOpts.videoPlanningContext,
+            saved_storyboards: [...ownedIds].map(([shot_number, id]) => ({ id, shot_number })),
+          });
+        }
+      }
       return added;
     })();
-    for (const num of newlySaved) savedNums.add(num);
+    for (const [num, id] of newlySaved) {
+      savedNums.add(num);
+      if (deriveOpts.savedStoryboardIds) deriveOpts.savedStoryboardIds.set(num, id);
+    }
     if (newlySaved.size > 0) {
       log.info('Storyboard incremental save', { episode_id: episodeIdNum, new_count: newlySaved.size, total_saved: savedNums.size });
     }
@@ -753,7 +783,7 @@ function saveStoryboards(db, log, episodeId, storyboards, cfg, styleOverride, sk
   if (skipShotNumbers === null) {
     const existing = db.prepare('SELECT id FROM storyboards WHERE episode_id = ? AND deleted_at IS NULL').all(episodeIdNum);
     if (existing.length > 0) {
-      db.prepare('UPDATE storyboards SET deleted_at = ? WHERE episode_id = ?').run(now, episodeIdNum);
+      retirePreviousStoryboards(db, episodeIdNum, existing.map((row) => row.id), now);
     }
   }
 
@@ -771,9 +801,11 @@ function saveStoryboards(db, log, episodeId, storyboards, cfg, styleOverride, sk
 
     // 已由增量流式保存过的分镜：必须用**最终完整 JSON** 再 UPDATE 一行（否则首镜常在流式阶段缺 narration 等字段且永不修正）
     if (skipShotNumbers && skipShotNumbers.has(shotNumber)) {
-      const existing = db.prepare(
-        'SELECT * FROM storyboards WHERE episode_id = ? AND storyboard_number = ? AND deleted_at IS NULL'
-      ).get(episodeIdNum, shotNumber);
+      const ownedId = deriveOpts.savedStoryboardIds?.get(shotNumber);
+      const existing = ownedId != null
+        ? db.prepare('SELECT * FROM storyboards WHERE id = ? AND episode_id = ? AND deleted_at IS NULL').get(ownedId, episodeIdNum)
+        : db.prepare('SELECT * FROM storyboards WHERE episode_id = ? AND storyboard_number = ? AND deleted_at IS NULL').get(episodeIdNum, shotNumber);
+      if (ownedId != null && !existing) throw new Error('本次生成的分镜已被替换，停止写入旧任务');
       if (existing) {
         const d = deriveStoryboardFieldsFromAi(sb, style, videoRatio, deriveOpts);
         updateStoryboardRowFromDerived(db, existing.id, episodeIdNum, d, sb, now);
@@ -979,6 +1011,9 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
   const deriveOpts = {
     universalOmni: !!universalOmni,
     targetClipDuration: targetClipDurationSec != null && Number(targetClipDurationSec) > 0 ? Number(targetClipDurationSec) : null,
+    videoPlanningContext: generationContext?.videoPlanningContext || null,
+    generationRunId: taskId,
+    savedStoryboardIds: new Map(),
   };
   let streamThrottle = 0;
 
@@ -1115,6 +1150,8 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
 
     // ── 自动续写：若 AI 输出被截断，最多续写 3 次直到完整 ──────────────────
     const MAX_CONTINUATION = 3;
+    // A repaired half-item is retained only as draft. Later complete items cannot finish its missing content.
+    let repairedIncomplete = parseMeta.repairedIncomplete === true;
     let contAttempt = 0;
     while (parseMeta.truncated && storyboards.length > 0 && contAttempt < MAX_CONTINUATION) {
       contAttempt++;
@@ -1151,6 +1188,7 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
       let contItems = [];
       try {
         const contParsed = safeParseAIJSON(contText, null, log, contMeta);
+        repairedIncomplete ||= contMeta.repairedIncomplete === true;
         contItems = extractFirstArray(contParsed) || [];
         if (!contItems.every(isValidStoryboardFromAi)) throw new Error('续写分镜缺少有效镜号或内容');
       } catch (e) {
@@ -1179,7 +1217,9 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
       });
     }
     // ── 续写结束 ────────────────────────────────────────────────────────────
+    if (repairedIncomplete) parseMeta.truncated = true;
 
+    storyboards = uniqueStoryboardAiItems(storyboards);
     const totalDuration = storyboards.reduce((sum, sb) => sum + (Number(sb.duration) || 0), 0);
     if (parseMeta.truncated) {
       log.warn('Storyboard still truncated after max continuations', {
@@ -1190,28 +1230,33 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
 
     taskService.updateTaskStatus(db, taskId, 'processing', 70, '正在保存分镜头...');
 
-    // 传入 streamSavedNums：已增量保存的项目直接从 DB 读取，跳过重复 INSERT
+    // Save content, final character inputs and planning together. A planning failure must not publish unplanned replacements.
     const saved = db.transaction(() => {
       assertCurrent();
       const rows = saveStoryboards(db, log, episodeId, storyboards, cfg, style, streamSavedNums, deriveOpts);
       if (rows.length === 0) throw new Error('未能保存有效分镜');
       retirePreviousStoryboards(db, episodeIdNum, deriveOpts.previousStoryboardIds, new Date().toISOString());
+      taskService.updateTaskStatus(db, taskId, 'processing', 75, '正在校验分镜角色关联...');
+      let totalCharAdded = 0;
+      for (const sb of rows) {
+        const { added } = syncEpisodeStoryboardCharacters(db, sb.id, deriveOpts.resources.characters);
+        totalCharAdded += added.length;
+        sb.characters = JSON.parse(db.prepare('SELECT characters FROM storyboards WHERE id = ?').get(sb.id).characters || '[]');
+      }
+      if (totalCharAdded > 0) log.info('[分镜] 角色补全完成', { episode_id: episodeId, total_added: totalCharAdded });
+      if (deriveOpts.videoPlanningContext) {
+        const planning = require('./videoPlanningService');
+        planning.applyStoryboardRecommendations(db, episodeIdNum, storyboards, {
+          // Incomplete/truncated batches remain drafts and cannot authorize GPU work.
+          phase: parseMeta.truncated ? 'draft' : 'final',
+          generation_run_id: taskId,
+          source_context: deriveOpts.videoPlanningContext,
+          saved_storyboards: rows,
+        });
+        for (const sb of rows) sb.video_plan = planning.getStoryboardVideoPlan(db, sb.id);
+      }
       return rows;
     })();
-
-    // ── 分镜角色补全（字符串匹配，无 AI，极快）──────────────────────────────────
-    taskService.updateTaskStatus(db, taskId, 'processing', 75, '正在校验分镜角色关联...');
-    let totalCharAdded = 0;
-    for (const sb of saved) {
-      if (!sb?.id) continue;
-      const { added } = syncEpisodeStoryboardCharacters(db, sb.id, deriveOpts.resources.characters);
-      totalCharAdded += added.length;
-      // 返回值与数据库保持一致，包含此次受限补全的角色。
-      sb.characters = JSON.parse(db.prepare('SELECT characters FROM storyboards WHERE id = ?').get(sb.id).characters || '[]');
-    }
-    if (totalCharAdded > 0) {
-      log.info('[分镜] 角色补全完成', { episode_id: episodeId, total_added: totalCharAdded });
-    }
 
     taskService.updateTaskStatus(db, taskId, 'processing', 90, '正在更新剧集时长...');
 
@@ -1264,7 +1309,7 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
   }
 }
 
-function generateStoryboard(db, log, episodeId, model, style, storyboardCount, videoDuration, aspectRatio, includeNarration, universalOmni) {
+function generateStoryboard(db, log, episodeId, model, style, storyboardCount, videoDuration, aspectRatio, includeNarration, universalOmni, videoPlanning = false) {
   const cfg = loadConfig();
   const episode = db.prepare(
     `SELECT e.id, e.script_content, e.drama_id FROM episodes e
@@ -1437,6 +1482,17 @@ The user enabled narrator voice-over for the whole episode. Every shot object MU
     systemPrompt += promptI18n.getStoryboardUniversalOmniModeSuffix(cfg);
   }
 
+  // Append after custom/system/universal prompts so all generation modes share one contract.
+  // This is separate from `model`, which still selects the text LLM.
+  const wantVideoPlanning = videoPlanning === true || videoPlanning === 1 || String(videoPlanning).toLowerCase() === 'true';
+  const videoPlanningContext = wantVideoPlanning
+    ? require('./videoPlanningService').getPlanningPromptContext(db, Number(episodeId), {})
+    : null;
+  if (videoPlanningContext) {
+    userPrompt += '\n\n' + videoPlanningContext.instruction;
+    systemPrompt += '\n\n视频方案属于每条分镜的 video_recommendation 字段。只使用任务提供的模型及来源候选；不新增顶层推荐数组，不将剧情续集等同于同镜头续拍。连续镜头方案必须与最终视频提示词一致，不能一边要求连续拍摄一边安排切镜。';
+  }
+
   const task = taskService.createTask(db, log, 'storyboard_generation', String(episodeId));
   log.info('Generating storyboard asynchronously', {
     task_id: task.id,
@@ -1470,7 +1526,7 @@ The user enabled narrator voice-over for the whole episode. Every shot object MU
       wantNarration,
       wantUniversalOmni,
       clipSec,
-      { episode, resources }
+      { episode, resources, videoPlanningContext }
     );
   });
 

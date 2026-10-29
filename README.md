@@ -56,6 +56,7 @@
 - [核心功能](#-核心功能)
 - [快速开始](#-快速开始)
 - [AI 服务商](#-ai-服务商支持)
+- [本地 ComfyUI 与 ben-H3-NG](#本地-comfyui-与-ben-h3-ng)
 - [项目架构](#-项目架构)
 - [后续计划](#-后续计划-roadmap)
 - [参与贡献](#-参与贡献)
@@ -221,6 +222,16 @@ cd frontweb && npm install && npm run dev
 | NanoBanana（含代理） | — | ✅ | — |
 | 本地 Ollama 等 OpenAI 兼容 | ✅ | — | — |
 | 其他 OpenAI 兼容接口 | ✅ | ✅ | — |
+
+---
+
+## 本地 ComfyUI 与 ben-H3-NG
+
+本地适配器为已有 ComfyUI 工作流提供稳定模型 ID。2026-10-27 核对本机 ben-H3-NG 当前页面入口及业务模块的工作流路径配置，已确认的本地模板引用去重后为 **19 份**，均与[模型注册表](backend-node/scripts/comfyui-models.json)匹配，未发现遗漏。
+
+多个功能共用模板：基础／多图／音乐 PV、单图／多图舞蹈和漫转共用标准模式；MG 动效复用长片文戏首段；分镜工坊的视频生成复用长片文戏首段与续接段。无需把 ComfyUI 用户或插件目录内所有附带工作流都纳入此平台的维护范围。
+
+完整模型 ID、平台功能对应关系、端口配置及调用方式见 [本地 ComfyUI 模型适配器说明](backend-node/scripts/readme.md)，覆盖依据见其中的 [ben-H3-NG 平台工作流覆盖范围](backend-node/scripts/readme.md#ben-h3-ng-平台工作流覆盖范围)。模板已登记不等于平台全部交互已在 LocalMiniDrama 实现，也不等于逐项真实生成已验证；特殊音频、视频和 latent 输入的调用限制以适配器说明为准。
 
 ---
 

@@ -1,6 +1,11 @@
 参考前端/
 .trae
-backend-node/scripts
+backend-node/scripts/*
+!backend-node/scripts/comfyui_bridge.py
+!backend-node/scripts/comfyui-models.json
+!backend-node/scripts/test_comfyui_bridge.py
+!backend-node/scripts/readme.md
+backend-node/data/comfyui-adapter/
 backend-node/configs/ai-configs-stary.json
 backend-node/configs/ai-configs-qudao.json
 backend-node/configs/ai-configs-2026-03-12 (5).json
@@ -33,3 +38,4 @@ node_modules
 ohos_hap
 backend-node/data/comfyui-bridge/
 backend-node/comfyui-bridge/__pycache__/
+backend-node/scripts

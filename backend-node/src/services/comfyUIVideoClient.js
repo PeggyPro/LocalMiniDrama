@@ -5,8 +5,13 @@ const { flattenModelIds, pickModelId } = require('./modelId');
 const COMFYUI_TASK_PREFIX = 'lmd-comfy-';
 const H3_MODEL = 'huobao_minimax_h3_reference_turbo_api';
 const WAN_MODEL = 'huobao_wan22_5b_t2v_32gb_api';
+const H3_CAPABILITIES = Object.freeze({ supports_first_frame: true, supports_last_frame: true, supports_references: true, max_reference_images: 9 });
+const H3_MODEL_HINT = '本地 H3 标准（h3-standard）、文戏（h3-drama）、武戏（h3-action）或兼容的 Wan2.2 5B 模型';
 const MODEL_CAPABILITIES = Object.freeze({
-  [H3_MODEL]: Object.freeze({ supports_first_frame: true, supports_last_frame: true, supports_references: true, max_reference_images: 9 }),
+  [H3_MODEL]: H3_CAPABILITIES,
+  'h3-standard': H3_CAPABILITIES,
+  'h3-drama': H3_CAPABILITIES,
+  'h3-action': H3_CAPABILITIES,
   [WAN_MODEL]: Object.freeze({ supports_first_frame: true, supports_last_frame: false, supports_references: false, max_reference_images: 1, reference_mode: 'single_first_frame' }),
 });
 const HTTP_TIMEOUT_MS = 30000;
@@ -142,7 +147,7 @@ async function validateComfyUIVideoConnection(config, log, modelHint) {
   let connection;
   try {
     const model = pickModelId(modelHint) || pickModelId(config.default_model) || flattenModelIds(config.model)[0] || '';
-    if (!getComfyUIVideoCapabilities(model)) throw new Error('请选择已适配的火宝 MiniMax H3 或 Wan2.2 5B 模型再测试连接');
+    if (!getComfyUIVideoCapabilities(model)) throw new Error(`请选择已适配的${H3_MODEL_HINT}再测试连接`);
     let nativeUrl;
     try {
       nativeUrl = new URL(String(config.base_url || '').trim());
@@ -158,7 +163,7 @@ async function validateComfyUIVideoConnection(config, log, modelHint) {
       seed: 42,
     });
     if (data.valid !== true || data.model !== model) {
-      throw new Error(safeMessage(data.error || 'ComfyUI 未确认所选工作流依赖可用，请检查火宝节点和模型文件', [config.api_key, connection.token]));
+      throw new Error(safeMessage(data.error || 'ComfyUI 未确认所选工作流依赖可用，请检查本地节点和模型文件', [config.api_key, connection.token]));
     }
     return { valid: true, model, capabilities: data.capabilities };
   } catch (error) {
@@ -171,7 +176,7 @@ async function callComfyUIVideoApi(config, log, opts = {}) {
   const model = String(opts.model || '').trim();
   const capabilities = getComfyUIVideoCapabilities(model);
   try {
-    if (!capabilities) return { error: `本地 ComfyUI 尚未适配模型 ${model || '（未选择）'}，请选择火宝 MiniMax H3 或 Wan2.2 5B 工作流` };
+    if (!capabilities) return { error: `本地 ComfyUI 尚未适配模型 ${model || '（未选择）'}，请选择${H3_MODEL_HINT}` };
     if (opts.reference_urls != null && !Array.isArray(opts.reference_urls)) throw new Error('ComfyUI 参考图列表格式无效，请重新选择参考图');
     const refs = opts.reference_urls || [];
     const explicitFirst = String(opts.first_frame_url || opts.first_frame_local_path || '').trim();

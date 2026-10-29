@@ -297,9 +297,9 @@ function createComfyUIBridgeProcess(dependencies = {}) {
     }
     if (result.state !== 'absent') throw portError(port, result);
 
-    const scriptPath = path.join(backendDir, 'comfyui-bridge', 'bridge.py');
+    const scriptPath = path.join(backendDir, 'scripts', 'comfyui_bridge.py');
     if (!existsSync(scriptPath)) {
-      throw new Error('ComfyUI bridge script is missing. Restore backend-node/comfyui-bridge/bridge.py and restart the backend.');
+      throw new Error('ComfyUI bridge script is missing. Restore backend-node/scripts/comfyui_bridge.py and restart the backend.');
     }
     const candidate = await findPython(config, log, epoch);
     assertActive(epoch);

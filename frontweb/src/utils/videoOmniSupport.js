@@ -3,7 +3,7 @@
  * 从 views/FilmCreate.vue 抽离，便于 node --test 直接单测。
  */
 
-import { COMFYUI_H3_MODEL, getComfyUIVideoModel, isNativeComfyUIVideoConfig } from './comfyUIConfig.js'
+import { isComfyUIH3Model, getComfyUIVideoModel, isNativeComfyUIVideoConfig } from './comfyUIConfig.js'
 
 export function videoModelNameFromAiConfig(cfg) {
   if (!cfg) return ''
@@ -47,7 +47,7 @@ export function parseAiConfigSettings(cfg) {
 export function canUseUniversalOmniVideoApi(cfg) {
   if (!cfg) return false
   if (isNativeComfyUIVideoConfig(cfg)) {
-    return getComfyUIVideoModel(cfg) === COMFYUI_H3_MODEL
+    return isComfyUIH3Model(getComfyUIVideoModel(cfg))
   }
   const proto = String(cfg.api_protocol || '').toLowerCase()
   const provider = String(cfg.provider || '').toLowerCase()

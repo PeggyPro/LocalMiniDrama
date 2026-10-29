@@ -543,6 +543,8 @@ function runMigrationsAndEnsure(database) {
   runMigrations(database);
   ensureAllColumns(database);
   ensureEpisodeNumberIndex(database);
+  require('../services/videoPlanningService').ensureVideoPlanningSchema(database);
+  require('../services/videoPlanExecutionService').ensureVideoExecutionSchema(database);
 }
 
 function main() {

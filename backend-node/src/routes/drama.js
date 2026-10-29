@@ -190,9 +190,14 @@ function finalizeEpisode(db, log, cfg) {
     const episodeId = req.params.episode_id;
     if (!episodeId) return response.badRequest(res, 'episode_id不能为空');
     const baseUrl = cfg?.storage?.base_url || '';
-    const result = dramaService.finalizeEpisode(db, log, episodeId, baseUrl, req.body || {});
-    if (!result) return response.notFound(res, '剧集不存在');
-    response.success(res, result);
+    try {
+      const result = dramaService.finalizeEpisode(db, log, episodeId, baseUrl, req.body || {});
+      if (!result) return response.notFound(res, '剧集不存在');
+      response.success(res, result);
+    } catch (err) {
+      log.error('finalize episode', { episodeId, error: err.message });
+      response.error(res, err.statusCode || 500, err.code || 'INTERNAL_ERROR', err.message, err.details);
+    }
   };
 }
 
@@ -311,6 +316,7 @@ function generateStoryboard(db, log) {
         aspect_ratio: body.aspect_ratio,
         include_narration: body.include_narration,
         universal_omni_storyboard: body.universal_omni_storyboard,
+        video_planning: body.video_planning,
       });
       response.success(res, resData);
     } catch (err) {

@@ -169,7 +169,7 @@ test('coalesces concurrent starts and reuses only the healthy managed PID', asyn
   const launch = h.calls[1];
   assert.equal(launch.command, 'C:\\Python With Spaces\\python.exe');
   assert.deepEqual(launch.args, [
-    path.join(BACKEND_DIR, 'comfyui-bridge', 'bridge.py'),
+    path.join(BACKEND_DIR, 'scripts', 'comfyui_bridge.py'),
     '--host', '127.0.0.1', '--port', String(h.port),
     '--data-dir', path.join(BACKEND_DIR, 'data', 'comfyui-bridge'),
     '--parent-pid', '12345',

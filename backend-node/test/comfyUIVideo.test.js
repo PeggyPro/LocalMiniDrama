@@ -15,6 +15,7 @@ const storageLayout = require('../src/services/storageLayout');
 
 const H3 = 'huobao_minimax_h3_reference_turbo_api';
 const WAN = 'huobao_wan22_5b_t2v_32gb_api';
+const H3_MODELS = ['h3-standard', 'h3-drama', 'h3-action'];
 const BRIDGE = 'http://127.0.0.1:15681';
 const BRIDGE_TOKEN = 'bridge-test-secret';
 const COMFY_TOKEN = 'comfy-test-secret';
@@ -111,6 +112,22 @@ describe('native ComfyUI read-only connection validation', () => {
     assert.equal(managerCalls.length, 2);
     assert.equal(managerCalls[0].log, log);
     assert.deepEqual(entries, []);
+  });
+
+  it('validates each local H3 profile without rewriting its model or requiring a native key', async () => {
+    const packets = [];
+    mock.method(global, 'fetch', async (url, options) => {
+      assert.equal(url, BRIDGE + '/video/validate');
+      assert.equal(options.headers.Authorization, 'Bearer ' + BRIDGE_TOKEN);
+      const body = JSON.parse(options.body);
+      packets.push(body);
+      return response({ valid: true, model: body.model, capabilities: comfy.getComfyUIVideoCapabilities(body.model) });
+    });
+    for (const model of H3_MODELS) {
+      await aiConfigService.testConnection({ ...nativeConfig(), provider: 'custom', name: '本地 H3', api_key: '', model: H3_MODELS, default_model: model });
+    }
+    assert.deepEqual(packets, H3_MODELS.map((model) => ({ model, comfyui_url: 'http://127.0.0.1:8188', prompt: 'Connection dependency check', duration: 1, seed: 42 })));
+    assert.equal(managerCalls.length, H3_MODELS.length);
   });
 
   it('service accepts missing native keys, explicit protocol and selected default models before external handling', async () => {
@@ -282,6 +299,61 @@ describe('managed native ComfyUI video client', () => {
     assert.equal(comfy.isComfyUITaskId('other-task'), false);
     assert.deepEqual(comfy.getComfyUIVideoCapabilities(H3), { supports_first_frame: true, supports_last_frame: true, supports_references: true, max_reference_images: 9 });
     assert.deepEqual(comfy.getComfyUIVideoCapabilities(WAN), { supports_first_frame: true, supports_last_frame: false, supports_references: false, max_reference_images: 1, reference_mode: 'single_first_frame' });
+  });
+
+  it('recognizes exact local H3 profiles with independent references and frame capabilities', () => {
+    for (const model of H3_MODELS) {
+      const config = { provider: 'custom', name: '本地 H3', model: [model] };
+      assert.equal(comfy.isNativeComfyUIConfig(config), true, model);
+      assert.deepEqual(comfy.getComfyUIVideoCapabilities(model), { supports_first_frame: true, supports_last_frame: true, supports_references: true, max_reference_images: 9 });
+      const snapshot = comfy.getComfyUIVideoCapabilities(model);
+      snapshot.max_reference_images = 1;
+      assert.equal(comfy.getComfyUIVideoCapabilities(model).max_reference_images, 9);
+      for (const override of [{ endpoint: '/proxy/create' }, { query_endpoint: '/proxy/{id}' }, { api_protocol: 'openai' }]) {
+        assert.equal(comfy.isNativeComfyUIConfig({ ...config, ...override }), false);
+      }
+    }
+    for (const model of ['h3-standard-other', 'H3-STANDARD', 'MiniMax-H3']) {
+      assert.equal(comfy.getComfyUIVideoCapabilities(model), null);
+      assert.equal(comfy.isNativeComfyUIConfig({ provider: 'custom', model }), false);
+    }
+  });
+
+  it('submits each H3 profile with nine ordered references plus independent first and last frames', async () => {
+    db.prepare('UPDATE ai_service_configs SET provider = ?, name = ?, model = ?, default_model = ?')
+      .run('custom', '本地 H3', JSON.stringify(H3_MODELS), H3_MODELS[0]);
+    const before = db.prepare('SELECT * FROM ai_service_configs').all();
+    const references = Array.from({ length: 9 }, (_, index) => dataUrl(index % 2 ? PNG : PNG_B));
+    const bodies = [];
+    mock.method(global, 'fetch', async (url, options) => {
+      assert.equal(url, BRIDGE + '/video/generations');
+      assert.equal(options.headers.Authorization, 'Bearer ' + BRIDGE_TOKEN);
+      bodies.push(JSON.parse(options.body));
+      return response({ task_id: 'lmd-comfy-h3-profile', status: 'processing' });
+    });
+    for (const model of H3_MODELS) {
+      const result = await videoClient.callVideoApi(db, log, {
+        model, prompt: '@图片1 与 @图片2 同框', duration: 6, aspect_ratio: '16:9',
+        reference_urls: references, first_frame_url: dataUrl(PNG), last_frame_url: dataUrl(PNG),
+      });
+      assert.deepEqual(result, { task_id: 'lmd-comfy-h3-profile', status: 'processing' });
+    }
+    assert.deepEqual(bodies, H3_MODELS.map((model) => ({
+      model, prompt: '@图片1 与 @图片2 同框', duration: 6, aspect_ratio: '16:9', reference_urls: references,
+      first_frame_url: dataUrl(PNG), last_frame_url: dataUrl(PNG),
+      comfyui_url: 'http://127.0.0.1:8188', comfyui_token: COMFY_TOKEN,
+    })));
+    assert.deepEqual(db.prepare('SELECT * FROM ai_service_configs').all(), before);
+  });
+
+  it('rejects over-limit references for every H3 profile before contacting the bridge', async () => {
+    for (const model of H3_MODELS) {
+      const result = await comfy.callComfyUIVideoApi(nativeConfig(), log, { model, reference_urls: Array(10).fill(dataUrl(PNG)) });
+      assert.match(result.error, /最多支持 9 张参考图/);
+      assert.equal(result.capabilities.max_reference_images, 9);
+    }
+    assert.equal(managerCalls.length, 0);
+    assert.equal(global.fetch.mock.callCount(), 0);
   });
 
   it('dispatches both configured models through the managed authenticated bridge without rewriting AI config', async () => {

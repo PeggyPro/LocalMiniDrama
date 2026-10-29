@@ -256,7 +256,7 @@ function updateDrama(db, log, dramaId, req) {
 
 function generateStoryboard(db, log, episodeId, options) {
   const episodeStoryboardService = require('./episodeStoryboardService');
-  const { model, style, storyboard_count, video_duration, aspect_ratio, include_narration, universal_omni_storyboard } = options || {};
+  const { model, style, storyboard_count, video_duration, aspect_ratio, include_narration, universal_omni_storyboard, video_planning } = options || {};
   // 转换可能为字符串的数字
   const count = storyboard_count ? Number(storyboard_count) : undefined;
   const duration = video_duration ? Number(video_duration) : undefined;
@@ -270,7 +270,8 @@ function generateStoryboard(db, log, episodeId, options) {
     duration,
     aspect_ratio,
     include_narration,
-    universal_omni_storyboard
+    universal_omni_storyboard,
+    video_planning
   );
 }
 
@@ -729,51 +730,9 @@ function saveCanvasLayout(db, log, dramaId, req) {
   return getDrama(db, dramaId);
 }
 
-/**
- * 取某分镜的视频地址：优先使用用户手动选定的 storyboard.video_url，否则取最新完成的 video_generations 记录
- */
+/** 明确采用的计划版本优先；否则保留旧分镜已选媒体，完成时间不改变选择。 */
 function getVideoUrlForStoryboard(db, storyboardId, baseUrl) {
-  // 1. 获取 storyboard 表中的视频信息（代表用户选定或上次同步的结果）
-  const sb = db.prepare('SELECT video_url, local_path, updated_at FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(storyboardId);
-  
-  // 2. 获取 video_generations 表中最新完成的记录
-  const vg = db.prepare(
-    "SELECT video_url, local_path, completed_at, updated_at, created_at FROM video_generations WHERE storyboard_id = ? AND status = 'completed' AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1"
-  ).get(storyboardId);
-
-  // 辅助函数：构造完整 URL，优先使用本地路径（避免远程URL过期导致无法合并）
-  const buildUrl = (videoUrl, localPath) => {
-    if (localPath && String(localPath).trim() && baseUrl) {
-      const base = (baseUrl || '').replace(/\/$/, '');
-      const p = String(localPath).replace(/^\//, '');
-      return p ? base + '/' + p : null;
-    }
-    if (videoUrl && String(videoUrl).trim()) return videoUrl;
-    return null;
-  };
-
-  const sbUrl = sb ? buildUrl(sb.video_url, sb.local_path) : null;
-  const vgUrl = vg ? buildUrl(vg.video_url, vg.local_path) : null;
-
-  // 策略：比较时间，取最新的
-  // 如果只有其中一个有 URL，直接用那个
-  if (sbUrl && !vgUrl) return sbUrl;
-  if (!sbUrl && vgUrl) return vgUrl;
-  if (!sbUrl && !vgUrl) return null;
-
-  // 都有 URL，比较时间
-  // sb 使用 updated_at
-  // vg 使用 completed_at > updated_at > created_at
-  const sbTime = sb.updated_at || '1970-01-01';
-  const vgTime = vg.completed_at || vg.updated_at || vg.created_at || '1970-01-01';
-
-  // 如果生成记录的时间比分镜更新时间还晚（说明是重新生成的，且可能没回写），则优先用生成记录
-  if (vgTime > sbTime) {
-    return vgUrl;
-  }
-  
-  // 否则依然以 storyboard 为准（可能是用户手动修改过，或者已经回写过）
-  return sbUrl;
+  return require('./adoptedVideoService').resolveAdoptedVideo(db, storyboardId, { baseUrl })?.url || null;
 }
 
 function finalizeEpisode(db, log, episodeId, baseUrl, body = {}) {
@@ -781,27 +740,36 @@ function finalizeEpisode(db, log, episodeId, baseUrl, body = {}) {
   if (!ep) return null;
   const drama = db.prepare('SELECT title FROM dramas WHERE id = ? AND deleted_at IS NULL').get(ep.drama_id);
   const storyboards = db.prepare(
-    'SELECT id, storyboard_number, duration FROM storyboards WHERE episode_id = ? AND deleted_at IS NULL ORDER BY storyboard_number ASC'
+    'SELECT id, storyboard_number FROM storyboards WHERE episode_id = ? AND deleted_at IS NULL ORDER BY storyboard_number ASC, id ASC'
   ).all(episodeId);
   const videoMergeService = require('./videoMergeService');
+  const { resolveAdoptedVideo } = require('./adoptedVideoService');
   const scenes = [];
+  const missing = [];
   for (let i = 0; i < storyboards.length; i++) {
     const sb = storyboards[i];
-    const videoUrl = getVideoUrlForStoryboard(db, sb.id, baseUrl);
-    if (!videoUrl) {
-      log.warn('Finalize skip storyboard (no video)', { storyboard_id: sb.id, storyboard_number: sb.storyboard_number });
+    const media = resolveAdoptedVideo(db, sb.id, { baseUrl });
+    if (!media) {
+      missing.push(sb.id);
       continue;
     }
     scenes.push({
       scene_id: sb.id,
-      video_url: videoUrl,
-      duration: Number(sb.duration) || 5,
+      video_url: media.video_url || media.url,
+      local_path: media.local_path,
+      version_id: media.version_id,
+      adoption_revision: media.adoption_revision,
+      duration: media.duration,
+      duration_source: media.source === 'planned' ? 'version_measured' : null,
       order: i,
     });
   }
-  if (scenes.length === 0) {
-    log.warn('Finalize no scenes with video', { episode_id: episodeId });
-    return { message: '本集没有可合成的视频片段', merge_id: null, episode_id: episodeId, scenes_count: 0, task_id: null };
+  if (missing.length || scenes.length === 0) {
+    throw Object.assign(new Error(missing.length
+      ? `整集合成失败：分镜 ${missing.join(', ')} 尚未选择可用视频`
+      : '整集合成失败：本集没有分镜'), {
+      statusCode: 400, code: 'INCOMPLETE_EPISODE', details: { missing_storyboard_ids: missing },
+    });
   }
   const title = drama && drama.title ? `${drama.title} - 第${ep.episode_number ?? episodeId}集` : null;
   const mergeReq = {

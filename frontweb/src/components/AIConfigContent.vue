@@ -122,10 +122,11 @@
                 <span v-else class="no-default">—</span>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="180" fixed="right">
+            <el-table-column label="操作" width="220" fixed="right">
               <template #default="{ row }">
                 <el-button link type="primary" size="small" @click="openTest(row)">测试</el-button>
                 <el-button link type="primary" size="small" @click="onRowEdit(row)">{{ vendorLock.enabled ? '修改Key' : '编辑' }}</el-button>
+                <el-button v-if="!vendorLock.enabled && row.service_type !== 'model_ark_asset'" link type="primary" size="small" @click="openEdit(row, { copy: true })">复制</el-button>
                 <el-button v-if="!vendorLock.enabled" link type="danger" size="small" @click="onDelete(row)">删除</el-button>
               </template>
             </el-table-column>
@@ -224,7 +225,7 @@
     <!-- 添加/编辑 -->
     <el-dialog
       v-model="dialogVisible"
-      :title="vendorLock.enabled ? '修改 API Key / 默认模型' : (editingId ? '编辑配置' : '添加配置')"
+      :title="vendorLock.enabled ? '修改 API Key / 默认模型' : (editingId ? '编辑配置' : (copySource ? '复制配置' : '添加配置'))"
       width="520px"
       class="ai-service-config-dialog"
       top="5vh"
@@ -253,7 +254,7 @@
           <el-form-item>
             <template #label><span class="form-label-tip">默认模型</span></template>
             <el-select v-model="form.default_model" clearable style="width: 100%">
-              <el-option v-for="m in formModelList" :key="m" :label="m" :value="m" />
+              <el-option v-for="m in formModelList" :key="m" :label="isNativeComfyUIForm ? getComfyUIVideoModelLabel(m) : m" :value="m" />
             </el-select>
             <p class="field-tip">实际调用时使用的模型，可从预设列表中选择。</p>
           </el-form-item>
@@ -396,7 +397,7 @@
             <el-option label="可灵 Omni-Video（官方 api-beijing / ffir 中转，O1 全能）" value="kling_omni" />
             <el-option label="xAI Grok Imagine（官方 prompt + aspect_ratio，/v1/videos/generations）" value="xai" />
             <el-option label="MiniMax H3（官方 V2：/v2/video_generation，模型 MiniMax-H3）" value="minimax_h3" />
-            <el-option v-if="['image', 'storyboard_image', 'video'].includes(form.service_type)" label="ComfyUI 本地（火宝工作流，自动桥接）" value="comfyui" />
+            <el-option v-if="['image', 'storyboard_image', 'video'].includes(form.service_type)" label="ComfyUI 本地（自动桥接）" value="comfyui" />
             <el-option label="NanoBanana" value="nano_banana" />
           </el-select>
         </el-form-item>
@@ -847,7 +848,7 @@ input_reference = (图片文件，可选)</pre>
               style="width: 220px; margin-bottom: 8px"
               @change="onPresetModelSelect"
             >
-              <el-option v-for="m in availableModels" :key="m" :label="m" :value="m" />
+              <el-option v-for="m in availableModels" :key="m" :label="isNativeComfyUIForm ? getComfyUIVideoModelLabel(m) : m" :value="m" />
             </el-select>
           </div>
           <el-input v-model="form.modelText" type="textarea" :rows="2" placeholder="选择预设厂商后自动填入，可编辑；多个用逗号或换行分隔" />
@@ -866,7 +867,7 @@ input_reference = (图片文件，可选)</pre>
             clearable
             style="width: 100%"
           >
-            <el-option v-for="m in formModelList" :key="m" :label="m" :value="m" />
+            <el-option v-for="m in formModelList" :key="m" :label="isNativeComfyUIForm ? getComfyUIVideoModelLabel(m) : m" :value="m" />
           </el-select>
           <p class="field-tip">该配置被选为「默认」时，生成故事/图片/视频将使用此处指定的模型。</p>
         </el-form-item>
@@ -1255,7 +1256,7 @@ import {
 } from '@/utils/reasoningSettings'
 import Sd2AssetManagement from '@/components/Sd2AssetManagement.vue'
 import {
-  COMFYUI_H3_MODEL, COMFYUI_WAN_MODEL, COMFYUI_VIDEO_PRESET,
+  isComfyUIH3Model, getComfyUIVideoModelLabel, COMFYUI_WAN_MODEL, COMFYUI_VIDEO_PRESET,
   COMFYUI_QWEN_IMAGE_MODEL, COMFYUI_IMAGE_PRESET, isNativeComfyUIImageConfig,
   getComfyUIVideoModel, isNativeComfyUIVideoConfig, buildAIConnectionTestPayload,
 } from '@/utils/comfyUIConfig'
@@ -1317,6 +1318,7 @@ const batchDeleting = ref(false)
 const vendorLock = ref({ enabled: false, config_file: '' })
 const dialogVisible = ref(false)
 const editingId = ref(null)
+const copySource = ref(null)
 const saving = ref(false)
 const showProtocolHelp = ref(false)
 const bulkKeyVisible = ref(false)
@@ -1368,9 +1370,9 @@ const comfyUICapabilityHint = computed(() => {
       ? 'Qwen-Image2.1 支持按编号顺序传入最多 16 张参考图（含尾帧的首帧站位锁）；无参考图时文生图。超出上限会明确报错，请减少参考图后重试。'
       : '当前图片工作流尚未适配，请选择预设的 Qwen-Image2.1 多参考图模型。'
   }
-  if (model === COMFYUI_H3_MODEL) return 'H3 支持按顺序传入最多 9 张参考图，并支持首帧和尾帧。'
+  if (isComfyUIH3Model(model)) return '本地 H3 标准、文戏、武戏均支持按顺序传入最多 9 张参考图，并支持独立首帧和尾帧；已有 H3 配置继续兼容。'
   if (model === COMFYUI_WAN_MODEL) return 'Wan 仅支持单张首帧图；参考图可作为首帧，不支持尾帧或多图参考。'
-  return '当前工作流尚未适配，请选择预设的 H3 或 Wan 模型。'
+  return '当前工作流尚未适配，请选择预设的本地 H3 标准、文戏或武戏模型；已有 Wan 模型继续兼容。'
 })
 const formReasoningEfforts = computed(() => parseReasoningEfforts(form.value.reasoningEffortText))
 
@@ -1663,7 +1665,7 @@ const availableProviderOptions = computed(() => {
   const listByType = providerConfigs[st] || []
   const current = form.value.provider
   let result = [...listByType]
-  if (editingId.value && current && current !== CUSTOM_PROVIDER_SENTINEL && !listByType.some((p) => p.id === current)) {
+  if ((editingId.value || copySource.value) && current && current !== CUSTOM_PROVIDER_SENTINEL && !listByType.some((p) => p.id === current)) {
     result = [{ id: current, name: current + ' (当前)', models: [] }, ...result]
   }
   result.push({ id: CUSTOM_PROVIDER_SENTINEL, name: '✏️ 自定义（直接输入厂商名）', models: [] })
@@ -1988,6 +1990,7 @@ function parseModelText(text) {
 
 function resetForm() {
   editingId.value = null
+  copySource.value = null
   presetModelPick.value = ''
   presetReasoningEffortPick.value = ''
   form.value = {
@@ -2022,8 +2025,10 @@ function openAdd() {
   dialogVisible.value = true
 }
 
-function openEdit(row) {
-  editingId.value = row.id
+function openEdit(row, { copy = false } = {}) {
+  if (copy && vendorLock.value.enabled) return
+  editingId.value = copy ? null : row.id
+  copySource.value = copy ? { service_type: row.service_type, settings: row.settings } : null
   const model = Array.isArray(row.model) ? row.model : (row.model ? [row.model] : [])
   const modelList = model.map((m) => String(m).trim()).filter(Boolean)
   const defaultInList = row.default_model && modelList.includes(row.default_model)
@@ -2060,7 +2065,7 @@ function openEdit(row) {
   }
   form.value = {
     service_type: row.service_type,
-    name: row.name,
+    name: copy ? `${row.name}（副本）` : row.name,
     provider: row.provider,
     api_protocol: row.api_protocol || '',
     base_url: row.base_url,
@@ -2074,7 +2079,7 @@ function openEdit(row) {
     deepseek_thinking: deepseekSettings.thinking,
     deepseek_reasoning_effort: deepseekSettings.effort,
     priority: row.priority ?? 0,
-    is_default: !!row.is_default,
+    is_default: copy ? false : !!row.is_default,
     supports_universal_omni,
     voice_id,
     group_id,
@@ -2100,15 +2105,21 @@ async function submit() {
     const defaultModel = form.value.default_model && modelList.includes(form.value.default_model)
       ? form.value.default_model
       : modelList[0] || null
+    // 复制时保留表单未展示的附加设置；更换服务类型后不沿用原类型设置。
+    const copiedSettings = copySource.value?.service_type === form.value.service_type
+      ? copySource.value.settings
+      : undefined
     // TTS / 可灵 Omni 官方 AKSK / DeepSeek V4 / 视频全能多图开关 → settings
-    let settings = undefined
+    let settings = copiedSettings
     if (form.value.service_type === 'tts') {
-      const s = {}
+      const s = { ...parseSettings(copiedSettings) }
       if (form.value.voice_id) s.voice_id = form.value.voice_id
+      else delete s.voice_id
       if (form.value.group_id) s.group_id = form.value.group_id
+      else delete s.group_id
       settings = Object.keys(s).length ? JSON.stringify(s) : null
     } else if (form.value.service_type === 'video') {
-      let baseS = {}
+      let baseS = { ...parseSettings(copiedSettings) }
       if (editingId.value) {
         const prev = list.value.find((r) => r.id === editingId.value)
         if (prev?.settings) {
@@ -2130,7 +2141,7 @@ async function submit() {
       settings = Object.keys(baseS).length ? JSON.stringify(baseS) : null
     } else if (form.value.service_type === 'text') {
       const prev = editingId.value ? list.value.find((r) => r.id === editingId.value) : null
-      let baseS = { ...parseSettings(prev?.settings) }
+      let baseS = { ...parseSettings(prev?.settings ?? copiedSettings) }
       if (isDeepSeekOfficialForm.value) {
         baseS.deepseek_thinking = form.value.deepseek_thinking === 'enabled' ? 'enabled' : 'disabled'
         if (baseS.deepseek_thinking === 'enabled') {

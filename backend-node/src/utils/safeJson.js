@@ -171,11 +171,41 @@ function fixUnquotedStringValues(str) {
   );
 }
 
+/** Detect unfinished containers/strings without treating repairable syntax as truncation. */
+function hasUnclosedJsonStructure(str) {
+  const stack = [];
+  let quote = null;
+  let escape = false;
+  for (const c of str) {
+    if (quote) {
+      if (escape) { escape = false; continue; }
+      if (c === '\\') { escape = true; continue; }
+      if (c === quote) quote = null;
+      continue;
+    }
+    // jsonrepair also accepts single-quoted strings; their braces are content.
+    if (c === '"' || c === "'") { quote = c; continue; }
+    if (c === '{' || c === '[') stack.push(c);
+    else if (c === '}' || c === ']') {
+      const opener = c === '}' ? '{' : '[';
+      if (stack[stack.length - 1] !== opener) return true;
+      stack.pop();
+    }
+  }
+  return quote !== null || stack.length > 0;
+}
+
+function markRepairedIncomplete(str, outMeta) {
+  if (outMeta && hasUnclosedJsonStructure(str) && hasUnclosedJsonStructure(fixUnquotedStringValues(str))) {
+    outMeta.repairedIncomplete = true;
+  }
+}
+
 /**
  * @param {string} aiResponse
  * @param {object|Array} v - 默认值类型（用于判断期望返回类型）
  * @param {object} [log] - 可选 logger，有 warn/info 方法；不传则用 console.warn
- * @param {object} [outMeta] - 可选输出元数据对象，解析后会写入 { truncated: boolean }
+ * @param {object} [outMeta] - 可选输出元数据：truncated 表示结构截断；repairedIncomplete 表示保留了由 jsonrepair 补齐的残缺项
  */
 function safeParseAIJSON(aiResponse, v, log, outMeta) {
   const _warn = (msg, extra) => {
@@ -217,11 +247,14 @@ function safeParseAIJSON(aiResponse, v, log, outMeta) {
     return parsed;
   } catch (err) {
     _warn('AI JSON 破损，尝试修复', { original_error: err.message, text_length: jsonStr.length, text_head: jsonStr.slice(0, 120000) });
+    // 补开始引号不会补齐响应尾部；先归一此格式错误，避免把完整裸值误判为未闭合字符串。
+    const preFixed = fixUnquotedStringValues(jsonStr);
+    const structurallyIncomplete = hasUnclosedJsonStructure(jsonStr) && hasUnclosedJsonStructure(preFixed);
 
     // 策略 0：AI 将数组包进对象（如 {"storyboards":[...]}），且因截断导致外层对象不完整。
     // 提取内部数组候选串，后续所有截断修复策略对它重新执行一遍。
     const innerArrayStr = extractWrappedArrayStr(jsonStr);
-    if (innerArrayStr) {
+    if (structurallyIncomplete && innerArrayStr) {
       // 0a：内部数组截断修复
       const innerRepaired = repairTruncatedJsonArray(innerArrayStr);
       if (innerRepaired && innerRepaired !== innerArrayStr) {
@@ -244,6 +277,7 @@ function safeParseAIJSON(aiResponse, v, log, outMeta) {
             if (items && items.length > 0) {
               _warn('AI JSON 修复成功（策略0b：解包对象+截断修复+jsonrepair）', { rescued_items: items.length });
               if (outMeta) outMeta.truncated = true;
+              markRepairedIncomplete(innerRepaired, outMeta);
               if (Array.isArray(v)) { v.length = 0; v.push(...items); }
               return items;
             }
@@ -272,6 +306,7 @@ function safeParseAIJSON(aiResponse, v, log, outMeta) {
             if (items && items.length > 0) {
               _warn('AI JSON 修复成功（策略0d：解包对象+激进截断+jsonrepair）', { rescued_items: items.length });
               if (outMeta) outMeta.truncated = true;
+              markRepairedIncomplete(innerRough, outMeta);
               if (Array.isArray(v)) { v.length = 0; v.push(...items); }
               return items;
             }
@@ -283,7 +318,7 @@ function safeParseAIJSON(aiResponse, v, log, outMeta) {
     // 修复策略 1：截断数组修复（应对 max_tokens 截断场景）
     // 通过深度追踪找到已完整闭合的顶层元素，截断后补 ]
     const repaired = repairTruncatedJsonArray(jsonStr);
-    if (repaired && repaired !== jsonStr) {
+    if (structurallyIncomplete && repaired && repaired !== jsonStr) {
       // 策略 1a：直接解析截断修复结果
       try {
         const parsed = JSON.parse(repaired);
@@ -314,6 +349,7 @@ function safeParseAIJSON(aiResponse, v, log, outMeta) {
             fixed_len: fixed.length,
           });
           if (outMeta) outMeta.truncated = true;
+          markRepairedIncomplete(repaired, outMeta);
           if (Array.isArray(v)) {
             v.length = 0;
             v.push(...(Array.isArray(parsed) ? parsed : []));
@@ -328,7 +364,7 @@ function safeParseAIJSON(aiResponse, v, log, outMeta) {
     // 策略 1c/1d：激进截断——repairTruncatedJsonArray 找不到完整顶层元素时
     // （截断恰好发生在第一个对象内部），强制切到最后一个 } 处后补 ]
     const roughCut = repairByLastBrace(jsonStr);
-    if (roughCut && roughCut !== jsonStr) {
+    if (structurallyIncomplete && roughCut && roughCut !== jsonStr) {
       // 策略 1c：直接解析粗截断结果
       try {
         const parsed = JSON.parse(roughCut);
@@ -362,6 +398,7 @@ function safeParseAIJSON(aiResponse, v, log, outMeta) {
               fixed_len: fixed.length,
             });
             if (outMeta) outMeta.truncated = true;
+            markRepairedIncomplete(roughCut, outMeta);
             if (Array.isArray(v)) {
               v.length = 0;
               v.push(...parsed);
@@ -385,6 +422,8 @@ function safeParseAIJSON(aiResponse, v, log, outMeta) {
           original_len: jsonStr.length,
           fixed_len: fixed.length,
         });
+        if (outMeta) outMeta.truncated = structurallyIncomplete;
+        markRepairedIncomplete(jsonStr, outMeta);
         if (Array.isArray(v)) {
           v.length = 0;
           v.push(...(Array.isArray(parsed) ? parsed : []));
@@ -397,7 +436,6 @@ function safeParseAIJSON(aiResponse, v, log, outMeta) {
       // 策略 2b：预处理"有结尾引号但缺开始引号"的裸值，再交给 jsonrepair
       // 场景：AI 生成 "key": 中文值"  而非  "key": "中文值"
       try {
-        const preFixed = fixUnquotedStringValues(jsonStr);
         if (preFixed !== jsonStr) {
           const fixed2 = _jsonrepair(preFixed);
           const parsed = JSON.parse(fixed2);
@@ -406,6 +444,8 @@ function safeParseAIJSON(aiResponse, v, log, outMeta) {
             original_len: jsonStr.length,
             fixed_len: fixed2.length,
           });
+          if (outMeta) outMeta.truncated = structurallyIncomplete;
+          markRepairedIncomplete(preFixed, outMeta);
           if (Array.isArray(v)) {
             v.length = 0;
             v.push(...(Array.isArray(parsed) ? parsed : []));

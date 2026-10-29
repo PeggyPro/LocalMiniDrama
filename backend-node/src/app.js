@@ -24,6 +24,10 @@ function createApp() {
 
   const { resumeProcessingVideoGenerations } = require('./services/videoService');
   resumeProcessingVideoGenerations(db, log);
+  // Durable plans recover their frozen attempts and connections; never recreate unknown submissions.
+  require('./services/videoPlanExecutionService').recoverPlans(db, config, log).catch((err) => {
+    log.error('video plan recovery failed', { error: err.code || 'VIDEO_PLAN_RECOVERY_FAILED' });
+  });
 
   const app = express();
   app.use(express.json({ limit: '10mb' }));

@@ -884,6 +884,10 @@
           </label>
         </div>
         <div class="sb-narration-export-row sb-generation-options">
+          <el-switch v-model="storyboardVideoPlanning" active-text="AI逐镜推荐" />
+          <span class="sb-config-hint">仅用于新生成分镜；旧镜头需明确更新推荐，生成视频前先预览计划</span>
+          <el-button size="small" :loading="videoPlanning.state.busy" :disabled="!currentEpisodeId || !storyboards.length || storyboardGenerating" @click="onRecommendStoryboardVideos">更新本集推荐（保留镜头与手动锁）</el-button>
+          <el-button size="small" :disabled="!currentEpisodeId || videoPlanning.state.loading" @click="videoPlanning.refresh">刷新方案</el-button>
           <el-checkbox v-model="storyboardUseFirstLastFrame" @change="onStoryboardUseFirstLastFrameChange">
             首尾帧参考图（经典模式双槽；图生前先走专业帧提示词模块 first/last，再生图；视频绑定 first/last_frame_url）
           </el-checkbox>
@@ -1504,6 +1508,15 @@
             </div>
             <!-- 右：分镜视频（由 /videos?storyboard_id 拉取）；有视频时仍显示提示词与生成按钮便于调整后重新生成 -->
             <div class="sb-panel sb-video">
+              <StoryboardVideoPlanning
+                :storyboard="sb" :item="videoPlanning.state.items[sb.id]"
+                :loaded="videoPlanning.state.loaded" :busy="videoPlanning.state.busy" :error="videoPlanning.state.error"
+                :capabilities="videoPlanning.state.capabilities" :sources="videoPlanning.state.sources"
+                :versions="videoPlanning.state.versions[sb.id] || []" :adoption-revision="videoPlanning.state.versionsRevision[sb.id] || 0"
+                :save-choice="videoPlanning.saveChoice" :load-versions="videoPlanning.versions" :adopt-version="videoPlanning.adopt"
+                @preview="previewStoryboardVideos([sb])" @append="(versionId) => previewStoryboardVideos([sb], { appendVersionId: versionId })"
+                @open-plan="videoPlanning.openPlan" @refresh-sources="videoPlanning.refresh"
+              />
               <div v-if="getSbVideo(sb.id)" class="sb-video-area">
                 <video
                   v-if="assetVideoUrl(getSbVideo(sb.id))"
@@ -1570,14 +1583,14 @@
               </div>
               <!-- 视频历史条：有多条历史时显示，点击可切换 -->
               <div v-if="getVideoStripItems(sb.id).length" class="sb-videos-strip">
-                <el-tooltip content="历史视频：点击可切换为当前视频" placement="top" :show-arrow="false">
+                <el-tooltip content="历史视频：点击明确采用为当前视频" placement="top" :show-arrow="false">
                   <el-icon class="sb-strip-hint-icon"><InfoFilled /></el-icon>
                 </el-tooltip>
                 <div
                   v-for="item in getVideoStripItems(sb.id)"
                   :key="item.key"
                   class="sb-video-thumb"
-                  :title="`${item.label}（点击切换）`"
+                  :title="`${item.label}（点击采用）`"
                   @click="onSelectSbMainVideo(sb, item.video)"
                 >
                   <video :src="item.src" preload="metadata" class="sb-video-thumb-player" />
@@ -2651,6 +2664,12 @@
       </template>
     </el-dialog>
 
+    <VideoPlanDialog
+      v-model="videoPlanning.state.dialogOpen" :plan="videoPlanning.state.plan"
+      :inputs="videoPlanning.state.previewInputs" :busy="videoPlanning.state.busy" :error="videoPlanning.state.error"
+      @run="videoPlanning.run" @resume="videoPlanning.resume" @refresh="videoPlanning.refreshPlan"
+    />
+
     <!-- AI 配置弹窗（不跳转，避免本页内容丢失） -->
     <el-dialog
       v-model="showAiConfigDialog"
@@ -2697,6 +2716,11 @@ import { sceneAPI } from '@/api/scenes'
 import { taskAPI } from '@/api/task'
 import { imagesAPI } from '@/api/images'
 import { videosAPI } from '@/api/videos'
+import { videoPlanningAPI } from '@/api/videoPlanning'
+import { useVideoPlanning } from '@/components/videoPlanning/useVideoPlanning'
+import StoryboardVideoPlanning from '@/components/videoPlanning/StoryboardVideoPlanning.vue'
+import VideoPlanDialog from '@/components/videoPlanning/VideoPlanDialog.vue'
+import { hasVideoPlanning, planningErrorMessage, videoRecordUrl } from '@/utils/videoPlanning'
 import { storyboardsAPI } from '@/api/storyboards'
 import { uploadAPI } from '@/api/upload'
 import { characterLibraryAPI } from '@/api/characterLibrary'
@@ -2924,6 +2948,17 @@ const props = computed(() => store.props)
 const storyboards = computed(() => store.storyboards)
 const currentEpisode = computed(() => store.currentEpisode)
 const currentEpisodeId = computed(() => store.currentEpisode?.id ?? null)
+// Only controls future storyboard generation; loading an old project never creates recommendations.
+const storyboardVideoPlanning = ref(true)
+const videoPlanning = useVideoPlanning({
+  api: videoPlanningAPI, episodeId: currentEpisodeId, dramaId,
+  notify: (message) => ElMessage.error(message),
+  onAdopted: async (id) => {
+    await loadSingleStoryboardMedia(id)
+    ElMessage.success('已采用此规划版本；后续生成不会自动替换它')
+  },
+})
+watch(storyboards, () => { videoPlanning.refresh() })
 const videoProgress = computed(() => store.videoProgress)
 const videoStatus = computed(() => store.videoStatus)
 
@@ -3762,13 +3797,9 @@ function openImagePreview(url) {
 function closeImagePreview() {
   previewImageUrl.value = null
 }
-/** 视频地址：优先 local_path（/static/），否则 video_url */
+/** 视频地址仅来自精确视频记录；不把分镜图片缓存当作视频。 */
 function assetVideoUrl(item) {
-  if (!item) return ''
-  const localPath = item.local_path && String(item.local_path).trim()
-  if (localPath) return '/static/' + localPath.replace(/^\//, '')
-  if (item.video_url) return imageUrl(item.video_url)
-  return ''
+  return videoRecordUrl(item)
 }
 /** 远程视频须为 http(s)，避免上游 FAILURE 时把错误文案写入 video_url */
 function isHttpVideoUrl(url) {
@@ -3778,10 +3809,7 @@ function isHttpVideoUrl(url) {
 }
 /** 列表项是否具备可播放地址（避免仅有空白 local_path 时外层有卡片、内层无 <video>） */
 function recordHasPlayableVideoUrl(i) {
-  if (!i) return false
-  const lp = i.local_path && String(i.local_path).trim()
-  if (lp) return true
-  return isHttpVideoUrl(i.video_url)
+  return !!videoRecordUrl(i)
 }
 /** 主播放器强制随记录/地址重建，避免重新生成后 <video> 仍缓存旧 src */
 function sbMainVideoPlayerKey(sbId) {
@@ -3929,16 +3957,29 @@ function getSbAllVideos(storyboardId) {
   if (!Array.isArray(list)) return []
   return list.filter((i) => i.status === 'completed' && recordHasPlayableVideoUrl(i))
 }
-/** 取该分镜当前选中的视频（尊重 sbSelectedVideoId，否则默认第一条） */
+/** 仅播放明确采用的视频；缺失的规划版本不回退到最新历史。 */
 function getSbVideo(storyboardId) {
+  const selectedVersionId = videoPlanning.state.items[storyboardId]?.selected_version_id
+  if (selectedVersionId) {
+    const versions = [...(videoPlanning.state.versions[storyboardId] || []), ...(videoPlanning.state.sources.versions || [])]
+    const selected = versions.find((v) => v.id === selectedVersionId)
+    return selected || null
+  }
   const all = getSbAllVideos(storyboardId)
+  const storyboard = (store.storyboards || []).find((sb) => sb.id === storyboardId)
+  // The saved video URL identifies the adopted history row; storyboard.local_path can still hold its input image.
+  if (storyboard?.video_url) {
+    const adopted = all.find((v) => v.video_url === storyboard.video_url || v.local_path === storyboard.video_url || videoRecordUrl({ local_path: v.local_path }) === storyboard.video_url)
+    if (adopted) return adopted
+    if (videoRecordUrl({ video_url: storyboard.video_url })) return { id: `adopted-${storyboardId}`, video_url: storyboard.video_url }
+  }
   if (all.length === 0) return null
   const selectedId = sbSelectedVideoId.value[storyboardId]
   if (selectedId != null) {
     const found = all.find((v) => v.id === selectedId)
     if (found) return found
   }
-  return all[0]
+  return null
 }
 /** 取下一个分镜（按 storyboard_number 顺序） */
 function getNextStoryboard(storyboardId) {
@@ -3972,16 +4013,31 @@ function getVideoStripItems(storyboardId) {
       key: `vid-${v.id}`,
       video: v,
       src: assetVideoUrl(v),
-      label: `历史${idx + 2}`,
+      label: `历史${idx + (current ? 2 : 1)}`,
     }))
 }
 /** 选中某条历史视频为当前视频，并持久化到分镜记录供合成视频使用 */
-function onSelectSbMainVideo(sb, video) {
-  sbSelectedVideoId.value = { ...sbSelectedVideoId.value, [sb.id]: video.id }
-  storyboardsAPI.update(sb.id, {
-    video_url: video.video_url || null,
-    local_path: video.local_path || undefined,
-  }).catch(e => console.warn('[主视频] 保存后端失败', e))
+async function onSelectSbMainVideo(sb, video) {
+  if (!videoPlanning.state.loaded) { ElMessage.warning('请等待规划状态加载或刷新方案后，再采用历史视频'); return }
+  const episodeId = currentEpisodeId.value
+  try {
+    const updated = await storyboardsAPI.update(sb.id, {
+      video_url: video.video_url || null,
+      local_path: video.local_path || undefined,
+      expected_adoption_revision: videoPlanning.state.items[sb.id]?.adoption_revision ?? 0,
+    })
+    if (episodeId !== currentEpisodeId.value) return
+    sbSelectedVideoId.value = { ...sbSelectedVideoId.value, [sb.id]: video.id }
+    sb.video_url = updated?.video_url || video.video_url || videoRecordUrl(video)
+    const previous = videoPlanning.state.items[sb.id]
+    if (updated?.video_plan) videoPlanning.state.items[sb.id] = updated.video_plan
+    else if (previous) videoPlanning.state.items[sb.id] = { ...previous, selected_version_id: null, adoption_revision: previous.adoption_revision + 1 }
+    await videoPlanning.refresh()
+  } catch (error) {
+    if (episodeId !== currentEpisodeId.value) return
+    if (error?.response?.status === 409) await videoPlanning.refresh()
+    ElMessage.error(planningErrorMessage(error))
+  }
 }
 /** 取该分镜最近一次视频生成的错误信息（从 API 返回的记录或本地即时错误） */
 function getSbVideoError(storyboardId) {
@@ -6751,8 +6807,76 @@ async function onRegenerateLayoutDescription(sb) {
   }
 }
 
+async function onRecommendStoryboardVideos() {
+  const result = await videoPlanning.recommend()
+  if (result) ElMessage.success('已更新本集推荐，镜头、现有视频与手动锁保持不变')
+}
+
+/** Capture the current editor inputs once. No prompt rebuilding, frame extraction or adoption changes. */
+function getStoryboardPlanInputs(sb) {
+  const universal = isSbUniversalMode(sb.id)
+  const { first, last } = sbVideoFirstLastUrls(sb, universal, null)
+  const referenceUrls = universal ? collectSbOmniReferenceAbsoluteUrls(sb) : (first ? [first] : [])
+  if (!universal && last && !referenceUrls.includes(last)) referenceUrls.push(last)
+  return {
+    prompt: buildSbVideoPromptForApi(sb),
+    image_url: first, first_frame_url: first, last_frame_url: last,
+    reference_image_urls: referenceUrls,
+    style: getSelectedStyle(), aspect_ratio: projectAspectRatio.value || '16:9',
+    resolution: videoResolution.value || undefined, duration: getSbVideoDurationForApi(sb),
+  }
+}
+
+async function previewStoryboardVideos(boards, options = {}) {
+  return videoPlanning.safe(async () => {
+    const episodeId = currentEpisodeId.value
+    if (!await videoPlanning.controller.load()) throw new Error('分集已切换，请重新预览')
+    if (options.appendVersionId) {
+      const choice = videoPlanning.state.items[boards[0]?.id]?.choice
+      const model = videoPlanning.state.capabilities.find((c) => c.model_id === choice?.model_id)
+      if (boards.length !== 1 || model?.stage !== 'continue' || choice?.source_ref?.kind !== 'version' || choice.source_ref.version_id !== options.appendVersionId) {
+        throw new Error('同卡追加需先手动选择续接模型，并将要追加的这个版本设为精确来源，再点击预览同卡追加')
+      }
+    }
+    const inputs = Object.fromEntries(boards.map((sb) => [sb.id, getStoryboardPlanInputs(sb)]))
+    if (currentEpisodeId.value !== episodeId) throw new Error('分集已切换，请重新预览')
+    // The backend freezes a compatible native connection per concrete model; never use a global model default.
+    return videoPlanning.controller.preview(boards, inputs, options)
+  })
+}
+
+/** Fail closed on unknown planning state. Mixed batches are all visible in one finite preview. */
+async function routeBatchToVideoPlan(boards) {
+  if (!await videoPlanning.controller.load()) throw new Error('分集已切换，请重新操作')
+  if (!boards.some((sb) => hasVideoPlanning(videoPlanning.state.items[sb.id]))) return false
+  const targets = boards.filter((sb) => !videoPlanning.state.items[sb.id]?.selected_version_id &&
+    !(sbVideos.value[sb.id] || []).some((v) => v.status === 'completed' && recordHasPlayableVideoUrl(v)))
+  if (targets.length) {
+    const plan = await previewStoryboardVideos(targets)
+    if (!plan) throw new Error('计划预览未完成；未提交视频任务，请处理页面错误后重试')
+    ElMessage.info('已打开有限计划：请检查目标并点击「运行计划」。完成后采用版本，再手动合成整集。')
+  } else {
+    ElMessage.info('本集已有视频或采用版本，未新增视频任务；请明确采用需要的版本，再手动合成整集。')
+  }
+  pipelineCurrentStep.value = '视频方案等待明确运行 / 采用；自动合成已停止'
+  return true
+}
+
+async function createLegacyStoryboardVideo(body) {
+  // Recheck immediately before the legacy submit as a recommendation may have been added meanwhile.
+  await videoPlanning.controller.guardLegacy(body.storyboard_id)
+  return videosAPI.create(body)
+}
+
 async function onGenerateSbVideo(sb) {
   if (!dramaId.value || !sb?.id || !sbCanSubmitVideo(sb)) return
+  try {
+    if (!await videoPlanning.controller.load()) return
+    if (hasVideoPlanning(videoPlanning.state.items[sb.id])) {
+      await previewStoryboardVideos([sb])
+      return
+    }
+  } catch (error) { ElMessage.error(error.message || '加载规划失败，未提交视频'); return }
   const universal = isSbUniversalMode(sb.id)
   let universalOmniApi = universal
   if (universal) {
@@ -6802,13 +6926,7 @@ async function onGenerateSbVideo(sb) {
   const meta = buildSbGenMeta(sb, GEN_RESOURCE.SB_VIDEO, '分镜视频')
   genStore.markRunning(meta)
   sbVideoErrors.value[sb.id] = ''
-  // 清除前端选中状态 + 清除后端手动指定的 video_url，让合成时自动取最新生成的视频
-  if (sbSelectedVideoId.value[sb.id] != null) {
-    const next = { ...sbSelectedVideoId.value }
-    delete next[sb.id]
-    sbSelectedVideoId.value = next
-  }
-  storyboardsAPI.update(sb.id, { video_url: null }).catch(() => {})
+  // Keep the current selection until the user explicitly adopts another version.
   try {
     let absoluteUrl = ''
     let referenceUrls = undefined
@@ -6834,7 +6952,7 @@ async function onGenerateSbVideo(sb) {
       referenceUrls = [...referenceUrls, vLast]
     }
     const preferClassicPrompt = universal && !universalOmniApi
-    const res = await videosAPI.create({
+    const res = await createLegacyStoryboardVideo({
       drama_id: dramaId.value,
       storyboard_id: sb.id,
       prompt: buildSbVideoPromptForApi(sb, { preferClassicPrompt }),
@@ -7035,6 +7153,7 @@ async function onGenerateStoryboard() {
       aspect_ratio: projectAspectRatio.value || '16:9',
       include_narration: !!storyboardIncludeNarration.value,
       universal_omni_storyboard: !!storyboardUniversalOmni.value,
+      video_planning: !!storyboardVideoPlanning.value,
     })
     const taskId = res?.task_id ?? (typeof res === 'string' ? res : null)
     if (taskId) {
@@ -7188,6 +7307,7 @@ async function startBatchVideoGeneration() {
       await loadStoryboardMedia()
     }
     const boards = store.storyboards || []
+    if (await routeBatchToVideoPlan(boards)) return
     // 只处理：有参考图（经典=分镜主图；全能=场景/角色/道具，不含经典主图）且 还没有已完成视频 的分镜
     const todo = boards.filter((sb) => {
       const vidList = sbVideos.value[sb.id] || []
@@ -7228,13 +7348,7 @@ async function startBatchVideoGeneration() {
         }
         try {
           generatingSbVideoIds.add(sb.id)
-          // 批量生成时清除手动指定的视频，确保合成时使用最新生成记录
-          storyboardsAPI.update(sb.id, { video_url: null }).catch(() => {})
-          if (sbSelectedVideoId.value[sb.id] != null) {
-            const next = { ...sbSelectedVideoId.value }
-            delete next[sb.id]
-            sbSelectedVideoId.value = next
-          }
+          // Generation does not clear an explicitly selected video.
           const firstFrameUrl = await getMainImageUrlForVideo(sb)
           const absoluteUrl = universal ? (omniRefs[0] || '') : toAbsoluteImageUrl(firstFrameUrl)
           // 连贯帧：提取上一条视频末帧作为参考（全能模式不走连贯帧替换）
@@ -7263,7 +7377,7 @@ async function startBatchVideoGeneration() {
           if (!universal && vLast && refUrls && !refUrls.includes(vLast)) {
             refUrls = [...refUrls, vLast]
           }
-          const res = await videosAPI.create({
+          const res = await createLegacyStoryboardVideo({
             drama_id: dramaId.value,
             storyboard_id: sb.id,
             prompt: buildSbVideoPromptForApi(sb),
@@ -7313,6 +7427,8 @@ async function startBatchVideoGeneration() {
     } else {
       ElMessage.info('批量生成已停止')
     }
+  } catch (error) {
+    ElMessage.error(error.message || '视频规划校验失败，未提交新任务')
   } finally {
     batchVideoRunning.value = false
   }
@@ -7714,6 +7830,7 @@ async function runOneClickPipeline(textOnly = false) {
           video_duration: getVideoDurationForApi(),
           include_narration: !!storyboardIncludeNarration.value,
           universal_omni_storyboard: !!storyboardUniversalOmni.value,
+      video_planning: !!storyboardVideoPlanning.value,
         })))
         const taskId = res?.task_id ?? (typeof res === 'string' ? res : null)
         if (taskId) {
@@ -7919,6 +8036,8 @@ async function runOneClickPipeline(textOnly = false) {
     // ════════════════════════════════════════════════════════
     // ⏱ 倒计时 20 秒：请浏览分镜图，确认后开始生成分镜视频
     // ════════════════════════════════════════════════════════
+    await pipelineRequest(async () => loadStoryboardMedia())
+    if (await pipelineRequest(async () => routeBatchToVideoPlan(store.storyboards || []))) return
     await pipelineRequest(async () => (runPipelineCountdown(20, '分镜图生成完毕，请浏览确认图片效果。倒计时结束后将开始生成分镜视频（消耗最多 Token）。')))
     await checkPause()
 
@@ -7957,7 +8076,7 @@ async function runOneClickPipeline(textOnly = false) {
             if (!universal && vLast && refUrls && !refUrls.includes(vLast)) {
               refUrls = [...refUrls, vLast]
             }
-            const res = await pipelineRequest(async () => (videosAPI.create({
+            const res = await pipelineRequest(async () => (createLegacyStoryboardVideo({
               drama_id: dramaIdVal,
               storyboard_id: sb.id,
               prompt: buildSbVideoPromptForApi(sb),
@@ -8214,6 +8333,7 @@ async function runRepairPipeline() {
           video_duration: getVideoDurationForApi(),
           include_narration: !!storyboardIncludeNarration.value,
           universal_omni_storyboard: !!storyboardUniversalOmni.value,
+      video_planning: !!storyboardVideoPlanning.value,
         })))
         const taskId = res?.task_id ?? (typeof res === 'string' ? res : null)
         if (taskId) {
@@ -8263,6 +8383,7 @@ async function runRepairPipeline() {
       if (paused) { await waitForResume() }
     }
     await pipelineRequest(async () => (loadStoryboardMedia()))
+    if (await pipelineRequest(async () => routeBatchToVideoPlan(store.storyboards || []))) return
     const boards2 = (store.storyboards || []).filter((sb) => {
       const vidList = sbVideos.value[sb.id] || []
       if (vidList.some((v) => v.status === 'completed' && recordHasPlayableVideoUrl(v))) return false
@@ -8292,7 +8413,7 @@ async function runRepairPipeline() {
             if (!universal && vLast && refUrls && !refUrls.includes(vLast)) {
               refUrls = [...refUrls, vLast]
             }
-            const res = await pipelineRequest(async () => (videosAPI.create({
+            const res = await pipelineRequest(async () => (createLegacyStoryboardVideo({
               drama_id: dramaIdVal,
               storyboard_id: sb.id,
               prompt: buildSbVideoPromptForApi(sb),

@@ -218,6 +218,11 @@ async function runMergedEpisodePostProcess(db, log, opts) {
     return { ok: false, error: 'NO_POST_OPTS' };
   }
 
+  if (scenes.some((scene) => !Number.isFinite(Number(scene.duration)) || Number(scene.duration) <= 0
+    || !['ffprobe', 'version_measured'].includes(scene.duration_source))) {
+    return { ok: false, error: '缺少分镜实际时长，不能按计划时长烧录旁白或字幕' };
+  }
+
   const videoDur = ffprobeDurationSec(mergedAbsPath);
   if (videoDur == null) {
     return { ok: false, error: '无法读取合成视频时长' };
@@ -240,7 +245,7 @@ async function runMergedEpisodePostProcess(db, log, opts) {
       for (let i = 0; i < scenes.length; i++) {
         const sc = scenes[i];
         const sbId = Number(sc.scene_id);
-        const slotSec = Math.max(0.2, Number(sc.duration) || 5);
+        const slotSec = Number(sc.duration);
         const row = db.prepare(
           'SELECT dialogue, narration, audio_local_path, narration_audio_local_path FROM storyboards WHERE id = ? AND deleted_at IS NULL'
         ).get(sbId);
@@ -377,8 +382,10 @@ async function runMergedEpisodePostProcess(db, log, opts) {
         args.push('-map', '0:v', '-map', '1:a');
       }
       args.push(
-        '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
-        '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', '-shortest', outAbs
+        '-c:v', 'libx264', '-preset', 'fast', '-crf', '23', '-fps_mode', 'passthrough',
+        // Pad audio to the measured video duration; -shortest can drop buffered final video frames.
+        '-af', 'apad', '-t', String(videoDur),
+        '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', outAbs
       );
       if (!runFfmpeg(args, log, 'mux_av')) {
         return { ok: false, error: '烧录字幕/水印或混音失败（请确认 ffmpeg 含 libx264）' };
@@ -393,7 +400,7 @@ async function runMergedEpisodePostProcess(db, log, opts) {
       } else {
         args.push('-an');
       }
-      args.push('-c:v', 'libx264', '-preset', 'fast', '-crf', '23', '-movflags', '+faststart', outAbs);
+      args.push('-c:v', 'libx264', '-preset', 'fast', '-crf', '23', '-fps_mode', 'passthrough', '-movflags', '+faststart', outAbs);
       if (!runFfmpeg(args, log, 'watermark_only')) {
         return { ok: false, error: '水印烧录失败' };
       }
