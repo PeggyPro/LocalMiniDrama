@@ -98,7 +98,11 @@ function probeVideoInfo(filePath) {
     '-v', 'error', '-select_streams', 'v:0', '-count_frames',
     '-show_entries', 'stream=nb_read_frames,duration:format=duration', '-of', 'json', filePath,
   ], { encoding: 'utf8', timeout: 120000, maxBuffer: 4 * 1024 * 1024 });
-  if (result.error || result.status !== 0 || String(result.stderr || '').trim()) return null;
+  // ffprobe can emit non-fatal codec warnings (notably for HEVC) on stderr
+  // while still returning valid JSON and a zero exit status. Treat the exit
+  // status and parsed stream data as authoritative; rejecting any stderr
+  // makes a valid merge look incomplete.
+  if (result.error || result.status !== 0) return null;
   try {
     const data = JSON.parse(result.stdout);
     const stream = data.streams?.[0];

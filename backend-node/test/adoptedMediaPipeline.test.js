@@ -260,6 +260,25 @@ test('real concat includes every selected clip and uses measured fractional dura
   assert.equal(evidence.frame_count, 6);
   assert.equal(evidence.last_pts, 1.25);
 });
+
+test('non-fatal ffprobe stderr does not reject a valid merge', async (t) => {
+  if (!mediaAvailable(t)) return;
+  const db = database(t); mergeConfig(t);
+  const spawn = childProcess.spawnSync;
+  t.mock.method(childProcess, 'spawnSync', (bin, args, options) => {
+    const result = spawn(bin, args, options);
+    if (bin === ffmpegPaths.getFfprobePath() && result.status === 0) {
+      return { ...result, stderr: '[hevc] non-fatal decoder warning' };
+    }
+    return result;
+  });
+  const created = startMerge(db);
+  await merge.processVideoMerge(db, log, created.merge_id, '');
+  const record = db.prepare('SELECT * FROM video_merges WHERE id=?').get(created.merge_id);
+  assert.equal(record.status, 'completed', record.error_msg);
+  assert.equal(record.duration, 1.5);
+  assert.equal(record.error_msg, null);
+});
 for (const variant of ['missing middle clip', 'download rejection', 'download HTTP failure', 'corrupt clip', 'missing storyboard', 'duplicate storyboard']) {
   test(`whole merge fails: ${variant}`, async (t) => {
     if (!mediaAvailable(t)) return;
