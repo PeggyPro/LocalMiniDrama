@@ -2,6 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const AdmZip = require('adm-zip');
+const { resolveAdoptedVideo } = require('./adoptedVideoService');
 
 const EXPORT_VERSION = '1.4';  // 1.4: 完整导出分镜图片历史（含首尾帧 first/last 绑定）、frame_prompts、layout_description 等，支持导入后恢复首尾帧模式数据
 
@@ -112,9 +113,9 @@ function exportDrama(db, cfg, log, dramaId) {
     ).all(sbId);
     allImagesBySb[sbId] = igs.filter(ig => ig && ig.local_path);
 
-    const vg = db.prepare(
-      "SELECT video_url, local_path FROM video_generations WHERE storyboard_id = ? AND status = 'completed' AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1"
-    ).get(sbId);
+    // Keep export aligned with playback, merge, and tail-frame selection:
+    // explicit adoption wins, otherwise the newest playable generation is used.
+    const vg = resolveAdoptedVideo(db, sbId);
     if (vg) videosBySb[sbId] = vg;
   }
 

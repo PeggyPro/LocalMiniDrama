@@ -48,7 +48,7 @@ function database(t, withPlans = true) {
     CREATE TABLE episodes (id INTEGER PRIMARY KEY, drama_id INTEGER, episode_number INTEGER, status TEXT, video_url TEXT, updated_at TEXT, deleted_at TEXT);
     CREATE TABLE storyboards (id INTEGER PRIMARY KEY, episode_id INTEGER, storyboard_number INTEGER, duration REAL,
       video_url TEXT, local_path TEXT, image_url TEXT, first_frame_image_id INTEGER, dialogue TEXT, narration TEXT,
-      audio_local_path TEXT, narration_audio_local_path TEXT, updated_at TEXT, deleted_at TEXT);
+      audio_local_path TEXT, narration_audio_local_path TEXT, video_selection_source TEXT, updated_at TEXT, deleted_at TEXT);
     CREATE TABLE video_generations (id INTEGER PRIMARY KEY, storyboard_id INTEGER, status TEXT, video_url TEXT, local_path TEXT,
       created_at TEXT, updated_at TEXT, completed_at TEXT, deleted_at TEXT);
     CREATE TABLE video_plan_versions (id TEXT PRIMARY KEY, storyboard_id INTEGER, model_id TEXT, tail_segment_id TEXT,
@@ -128,10 +128,31 @@ test('no adoption keeps legacy selection despite newer completed generations; ol
   assert.equal(selected.version_id, null);
   assert.equal(db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE name='storyboard_video_plans'").get().n, 0);
 });
-test('an unselected latest generation is not implicitly adopted when the storyboard has no video', (t) => {
+test('an unselected latest completed plan version becomes the default when the storyboard has no video', (t) => {
   const db = database(t);
   db.exec("UPDATE storyboards SET video_url=NULL,local_path='image.png' WHERE id=11");
-  assert.equal(adopted.resolveAdoptedVideo(db, 11), null);
+  const selected = adopted.resolveAdoptedVideo(db, 11);
+  assert.equal(selected.version_id, 'latest');
+  assert.equal(selected.source, 'planned');
+  assert.equal(selected.local_path, 'newest.mp4');
+  assert.equal(selected.duration, 0.5);
+});
+
+test('an automatic legacy cache does not block a newer completed generation', (t) => {
+  const db = database(t, false);
+  db.exec("DELETE FROM video_plan_versions; UPDATE storyboards SET video_selection_source='automatic' WHERE id=11");
+  const selected = adopted.resolveAdoptedVideo(db, 11);
+  assert.equal(selected.source, 'legacy_latest');
+  assert.equal(selected.video_url, 'https://media.invalid/newest.mp4');
+});
+
+test('the latest completed legacy generation becomes the default when no plan versions exist', (t) => {
+  const db = database(t, false);
+  db.exec("DELETE FROM video_plan_versions; UPDATE storyboards SET video_url=NULL,local_path='image.png' WHERE id=11");
+  const selected = adopted.resolveAdoptedVideo(db, 11);
+  assert.equal(selected.source, 'legacy_latest');
+  assert.equal(selected.video_url, 'https://media.invalid/newest.mp4');
+  assert.equal(selected.local_path, 'newest.mp4');
 });
 test('legacy image path never overrides video URL; only an exact generation URL can locate its download', (t) => {
   const db = database(t);

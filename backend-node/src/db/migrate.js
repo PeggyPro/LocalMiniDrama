@@ -158,6 +158,7 @@ function ensureAllColumns(database) {
     { name: 'local_path',        type: 'TEXT' },
     { name: 'main_panel_idx',    type: 'INTEGER' },
     { name: 'video_url',         type: 'TEXT' },
+    { name: 'video_selection_source', type: 'TEXT' }, // automatic | manual；区分默认生成结果与手动采用历史
     { name: 'composed_image',    type: 'TEXT' },
     { name: 'result',            type: 'TEXT' },
     { name: 'emotion',           type: 'TEXT' },               // 当前情绪（兴奋/悲伤/紧张等）

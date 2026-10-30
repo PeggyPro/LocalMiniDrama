@@ -17,7 +17,7 @@
       <p v-if="selectedModel?.runtime_verified === false" class="planning-detail">目录已注册，尚未经本机 GPU 实测；执行前仍需校验输入和来源。</p>
       <p v-for="reason in view.reasons" :key="reason" class="planning-warning">{{ reason }}</p>
       <p v-if="item?.last_execution" class="planning-detail">最近执行：{{ item.last_execution.model_id || '见计划节点' }} · {{ executionLabel(item.last_execution) }} <span v-if="item.last_execution.plan_id">· 计划 {{ item.last_execution.plan_id }}</span></p>
-      <p class="planning-detail">当前采用版本：{{ item?.selected_version_id || '未采用规划版本（保留原选片）' }}</p>
+      <p class="planning-detail">当前采用版本：{{ item?.selected_version_id || '未采用规划版本（默认使用最新完成视频）' }}</p>
       <p v-if="adoptedVersionMissing" class="planning-warning">当前采用版本尚未加载，主播放器不会切换到其他历史。请点击顶部「刷新方案」。</p>
       <div class="planning-actions">
         <el-button size="small" :disabled="busy || view.state === 'draft'" @click="startEdit">手动选择 / 锁定</el-button>
@@ -49,7 +49,7 @@
         </div>
       </div>
       <div v-if="versionsOpen" class="planning-versions">
-        <p class="planning-detail">播放仅预览；点击「采用此版本」才替换本镜选片。生成新版本不自动采用。同卡追加需先手动选择续接模型，并将本版本设为精确来源。</p>
+        <p class="planning-detail">播放仅预览；点击「采用此版本」会固定本镜选片。没有明确采用版本时，主播放器和合成默认使用最新完成且可播放的视频；手动选择历史视频后，以手动选择为准。同卡追加需先手动选择续接模型，并将本版本设为精确来源。</p>
         <el-button size="small" :disabled="busy" @click="loadVersions(storyboard.id)">刷新版本与采用修订</el-button>
         <p v-if="!versions.length">暂无版本。</p>
         <article v-for="version in versions" :key="version.id" class="planning-version">

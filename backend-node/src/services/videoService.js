@@ -314,14 +314,25 @@ async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, v
       ).run('completed', videoUrl, localPath, now, videoGenId);
     } else throw e;
   }
+  // Keep the legacy first-result cache for compatibility, but mark it as an
+  // automatic default. The read-only resolver ignores that marker when looking
+  // for a newer completed generation; a manual adoption changes it to manual.
   if (row.storyboard_id && require('./legacyVideoPlanningGuard').canAutoAdoptLegacyVideo(db, row.storyboard_id)) {
     try {
-      db.prepare('UPDATE storyboards SET video_url = ?, local_path = ?, updated_at = ? WHERE id = ?').run(
-        videoUrl, localPath, now, row.storyboard_id
-      );
+      const hasSourceColumn = db.prepare('PRAGMA table_info(storyboards)').all().some((column) => column.name === 'video_selection_source');
+      if (hasSourceColumn) {
+        db.prepare('UPDATE storyboards SET video_url = ?, local_path = ?, video_selection_source = ?, updated_at = ? WHERE id = ?').run(
+          videoUrl, localPath, 'automatic', now, row.storyboard_id
+        );
+      } else {
+        db.prepare('UPDATE storyboards SET video_url = ?, local_path = ?, updated_at = ? WHERE id = ?').run(
+          videoUrl, localPath, now, row.storyboard_id
+        );
+      }
       log.info('Updated storyboard video' + (logLabel ? ` (${logLabel})` : ''), {
         storyboard_id: row.storyboard_id,
         video_url: videoUrl,
+        selection_source: hasSourceColumn ? 'automatic' : 'legacy-compatibility',
       });
     } catch (_) {}
   }

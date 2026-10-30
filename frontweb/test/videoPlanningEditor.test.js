@@ -16,19 +16,30 @@ function handlers(names, bindings) {
 }
 const messages = { error() {}, warning() {}, info() {} }
 
-test('main player respects adopted version and exact saved history, never latest or storyboard image cache', () => {
+test('main player keeps explicit adoption and otherwise uses the newest playable generated video', () => {
   const storyboard = { id: 10, video_url: 'https://host/chosen.mp4', local_path: 'images/input.png' }
-  const state = { items: {}, sources: { versions: [] }, versions: {} }
-  const videos = [{ id: 2, status: 'completed', video_url: 'https://host/latest.mp4', local_path: 'videos/latest.mp4' }, { id: 1, status: 'completed', video_url: 'https://host/chosen.mp4', local_path: 'videos/chosen.mp4' }]
-  const editor = handlers(['getSbVideo', 'getSbAllVideos', 'recordHasPlayableVideoUrl', 'assetVideoUrl'], {
+  const state = { items: {}, sources: { versions: [{ id: 'planned-latest', storyboard_id: 10, status: 'completed', created_at: '2099-01-02', video_url: 'https://host/planned-latest.mp4' } ] }, versions: {} }
+  const videos = [
+    { id: 2, status: 'completed', completed_at: '2099-01-01', video_url: 'https://host/latest.mp4', local_path: 'videos/latest.mp4' },
+    { id: 1, status: 'completed', completed_at: '2020-01-01', video_url: 'https://host/chosen.mp4', local_path: 'videos/chosen.mp4' },
+  ]
+  const editor = handlers(['getSbVideo', 'getSbAllVideos', 'getSbAllPlannedVideos', 'getSbAllGeneratedVideos', 'videoRecency', 'newestVideoFirst', 'recordHasPlayableVideoUrl', 'assetVideoUrl'], {
     videoPlanning: { state }, store: { storyboards: [storyboard] }, sbVideos: { value: { 10: videos } }, sbSelectedVideoId: { value: {} }, videoRecordUrl,
   })
   assert.equal(editor.getSbVideo(10).id, 1)
   assert.equal(editor.assetVideoUrl(editor.getSbVideo(10)), '/static/videos/chosen.mp4')
   storyboard.video_url = '/static/videos/chosen.mp4'
   assert.equal(editor.getSbVideo(10).id, 1)
+  storyboard.video_url = '/static/videos/chosen.mp4'
+  storyboard.video_selection_source = 'automatic'
+  assert.equal(editor.getSbVideo(10).id, 'planned-latest')
+  storyboard.video_selection_source = null
   storyboard.video_url = null
-  assert.equal(editor.getSbVideo(10), null)
+  assert.equal(editor.getSbVideo(10).id, 'planned-latest')
+  state.sources.versions = []
+  assert.equal(editor.getSbVideo(10).id, 2)
+  videos.unshift({ id: 3, status: 'completed', completed_at: '2100-01-01', video_url: 'https://host/newest.mp4', local_path: 'videos/newest.mp4' })
+  assert.equal(editor.getSbVideo(10).id, 3)
   state.items[10] = { selected_version_id: 'not-loaded' }
   assert.equal(editor.getSbVideo(10), null)
   state.sources.versions = [{ id: 'not-loaded', video_url: 'https://host/adopted.mp4' }]

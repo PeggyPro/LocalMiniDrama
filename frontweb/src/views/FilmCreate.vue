@@ -3956,13 +3956,41 @@ function getQuadGridImage(storyboardId) {
   if (!Array.isArray(list)) return null
   return list.find((i) => i.status === 'completed' && (i.frame_type === 'quad_grid' || i.frame_type === 'nine_grid') && (i.image_url || i.local_path)) || null
 }
-/** 取该分镜所有已完成的视频记录 */
+/** 取该分镜所有已完成的旧流程视频记录，按生成时间从新到旧排列。 */
+function videoRecency(item) {
+  const value = item?.created_at || item?.completed_at || item?.updated_at
+  const time = value ? Date.parse(value) : NaN
+  return Number.isFinite(time) ? time : 0
+}
+function newestVideoFirst(a, b) {
+  return videoRecency(b) - videoRecency(a) || Number(b?.id || 0) - Number(a?.id || 0)
+}
 function getSbAllVideos(storyboardId) {
   const list = sbVideos.value[storyboardId]
   if (!Array.isArray(list)) return []
-  return list.filter((i) => i.status === 'completed' && recordHasPlayableVideoUrl(i))
+  return list.filter((i) => i.status === 'completed' && recordHasPlayableVideoUrl(i)).sort(newestVideoFirst)
 }
-/** 仅播放明确采用的视频；缺失的规划版本不回退到最新历史。 */
+/** 取该分镜已完成且可播放的规划版本，供无明确采用时使用最新生成结果。 */
+function getSbAllPlannedVideos(storyboardId) {
+  const versions = [...(videoPlanning.state.versions[storyboardId] || []), ...(videoPlanning.state.sources.versions || [])]
+  const seen = new Set()
+  return versions
+    .filter((v) => v && (v.storyboard_id == null || Number(v.storyboard_id) === Number(storyboardId)) && v.status === 'completed' && videoRecordUrl(v))
+    .filter((v) => {
+      const key = String(v.id)
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    .sort(newestVideoFirst)
+}
+function getSbAllGeneratedVideos(storyboardId) {
+  return [...getSbAllPlannedVideos(storyboardId), ...getSbAllVideos(storyboardId)].sort(newestVideoFirst)
+}
+/**
+ * 明确采用的规划版本、历史视频选择和手动锁定优先；没有这些选择时，
+ * 默认使用该分镜最新完成且可播放的规划版本或旧流程视频。
+ */
 function getSbVideo(storyboardId) {
   const selectedVersionId = videoPlanning.state.items[storyboardId]?.selected_version_id
   if (selectedVersionId) {
@@ -3973,18 +4001,17 @@ function getSbVideo(storyboardId) {
   const all = getSbAllVideos(storyboardId)
   const storyboard = (store.storyboards || []).find((sb) => sb.id === storyboardId)
   // The saved video URL identifies the adopted history row; storyboard.local_path can still hold its input image.
-  if (storyboard?.video_url) {
+  if (storyboard?.video_url && storyboard.video_selection_source !== 'automatic') {
     const adopted = all.find((v) => v.video_url === storyboard.video_url || v.local_path === storyboard.video_url || videoRecordUrl({ local_path: v.local_path }) === storyboard.video_url)
     if (adopted) return adopted
     if (videoRecordUrl({ video_url: storyboard.video_url })) return { id: `adopted-${storyboardId}`, video_url: storyboard.video_url }
   }
-  if (all.length === 0) return null
   const selectedId = sbSelectedVideoId.value[storyboardId]
   if (selectedId != null) {
     const found = all.find((v) => v.id === selectedId)
     if (found) return found
   }
-  return null
+  return getSbAllGeneratedVideos(storyboardId)[0] || null
 }
 /** 取下一个分镜（按 storyboard_number 顺序） */
 function getNextStoryboard(storyboardId) {

@@ -3,6 +3,9 @@
 function hasTable(db, name) {
   return !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name);
 }
+function hasColumn(db, table, name) {
+  return hasTable(db, table) && db.prepare(`PRAGMA table_info(${table})`).all().some((column) => column.name === name);
+}
 function getPlanRow(db, storyboardId) {
   return hasTable(db, 'storyboard_video_plans')
     ? db.prepare('SELECT * FROM storyboard_video_plans WHERE storyboard_id=?').get(Number(storyboardId)) : null;
@@ -75,6 +78,7 @@ function adoptLegacyMedia(db, storyboard, body) {
   // This legacy column also holds image input. Keep that input; selected video cache is resolved from its exact history row.
   body.local_path = storyboard.local_path && !isVideoPath(storyboard.local_path)
     ? storyboard.local_path : match.local_path || null;
+  if (hasColumn(db, 'storyboards', 'video_selection_source')) body.video_selection_source = 'manual';
   if (!plan) return;
   const changed = db.prepare(`UPDATE storyboard_video_plans SET selected_version_id=NULL,
     adoption_revision=adoption_revision+1, updated_at=datetime('now') WHERE storyboard_id=? AND adoption_revision=?`)
