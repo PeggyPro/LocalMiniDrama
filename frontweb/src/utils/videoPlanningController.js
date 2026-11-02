@@ -93,10 +93,10 @@ export function createVideoPlanningController(api, state = newPlanningState()) {
       throw error
     } finally { if (same(token)) state.busy = false }
   }
-  async function recommend() {
+  async function recommend(strategy = 'heuristic') {
     const token = epoch
     return mutate(async () => {
-      const dto = await api.recommend(scope.episodeId)
+      const dto = await api.recommend(scope.episodeId, strategy)
       if (same(token)) { applyEpisode(dto); await reload() }
       return dto
     })

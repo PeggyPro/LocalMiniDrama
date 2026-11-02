@@ -888,7 +888,12 @@
         <div class="sb-narration-export-row sb-generation-options">
           <el-switch v-model="storyboardVideoPlanning" active-text="AI逐镜推荐" />
           <span class="sb-config-hint">仅用于新生成分镜；旧镜头需明确更新推荐，生成视频前先预览计划</span>
-          <el-button size="small" :loading="videoPlanning.state.busy" :disabled="!currentEpisodeId || !storyboards.length || storyboardGenerating" @click="onRecommendStoryboardVideos">更新本集推荐（保留镜头与手动锁）</el-button>
+          <el-tooltip content="调用文本模型重新推荐；保留镜头、现有视频与手动锁定选择" placement="top">
+            <el-button size="small" :loading="videoPlanning.state.busy" :disabled="!currentEpisodeId || !storyboards.length || storyboardGenerating" @click="onRecommendStoryboardVideos('ai')">AI 重新推荐本集</el-button>
+          </el-tooltip>
+          <el-tooltip content="不调用 AI；保留镜头、现有视频与手动锁定选择" placement="top">
+            <el-button size="small" :loading="videoPlanning.state.busy" :disabled="!currentEpisodeId || !storyboards.length || storyboardGenerating" @click="onRecommendStoryboardVideos('heuristic')">规则推荐（不调用 AI）</el-button>
+          </el-tooltip>
           <el-button size="small" :disabled="!currentEpisodeId || videoPlanning.state.loading" @click="videoPlanning.refresh">刷新方案</el-button>
           <el-checkbox v-model="storyboardUseFirstLastFrame" @change="onStoryboardUseFirstLastFrameChange">
             首尾帧参考图（经典模式双槽；图生前先走专业帧提示词模块 first/last，再生图；视频绑定 first/last_frame_url）
@@ -6840,9 +6845,9 @@ async function onRegenerateLayoutDescription(sb) {
   }
 }
 
-async function onRecommendStoryboardVideos() {
-  const result = await videoPlanning.recommend()
-  if (result) ElMessage.success('已更新本集推荐，镜头、现有视频与手动锁保持不变')
+async function onRecommendStoryboardVideos(strategy = 'heuristic') {
+  const result = await videoPlanning.recommend(strategy)
+  if (result) ElMessage.success(`已完成本集${strategy === 'ai' ? ' AI 推荐' : '规则推荐（未调用 AI）'}，镜头、现有视频与手动锁保持不变`)
 }
 
 /** Capture the current editor inputs once. No prompt rebuilding, frame extraction or adoption changes. */

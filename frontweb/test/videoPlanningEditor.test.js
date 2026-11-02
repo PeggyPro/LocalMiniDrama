@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { parse, compileScript } from 'vue/compiler-sfc'
+import { computed } from 'vue'
 import { hasVideoPlanning, planningErrorMessage, videoRecordUrl, activeExecution } from '../src/utils/videoPlanning.js'
 
 const { descriptor } = parse(readFileSync(new URL('../src/views/FilmCreate.vue', import.meta.url), 'utf8'))
@@ -15,6 +16,49 @@ function handlers(names, bindings) {
   return new Function(...Object.keys(bindings), `${body}\nreturn { ${names.join(', ')} }`)(...Object.values(bindings))
 }
 const messages = { error() {}, warning() {}, info() {} }
+
+test('actual recommendation buttons select explicit strategies and announce the matching source only on success', async () => {
+  const controls = []
+  function visit(node) {
+    if (node.type === 1 && node.tag === 'el-button') {
+      const click = node.props.find((p) => p.type === 7 && p.name === 'on' && p.arg?.content === 'click')?.exp?.content
+      if (click?.includes('onRecommendStoryboardVideos')) controls.push({ label: node.children.filter((n) => n.type === 2).map((n) => n.content).join('').trim(), click })
+    }
+    for (const child of node.children || []) visit(child)
+  }
+  visit(descriptor.template.ast)
+  assert.deepEqual(controls.map((c) => c.label), ['AI 重新推荐本集', '规则推荐（不调用 AI）'])
+  const strategies = [], notices = []
+  let result = { items: [] }
+  const { onRecommendStoryboardVideos } = handlers(['onRecommendStoryboardVideos'], {
+    videoPlanning: { recommend: async (strategy) => { strategies.push(strategy); return result } },
+    ElMessage: { success: (message) => notices.push(message) },
+  })
+  const click = (control) => new Function('onRecommendStoryboardVideos', `return (${control.click})`)(onRecommendStoryboardVideos)
+  await click(controls[0])
+  await click(controls[1])
+  assert.deepEqual(strategies, ['ai', 'heuristic'])
+  assert.match(notices[0], /^已完成本集 AI 推荐，/)
+  assert.match(notices[1], /^已完成本集规则推荐（未调用 AI），/)
+  assert.ok(notices.every((message) => message.includes('镜头、现有视频与手动锁保持不变')))
+  result = null
+  await click(controls[0])
+  assert.deepEqual(strategies, ['ai', 'heuristic', 'ai'])
+  assert.equal(notices.length, 2, 'a rejected recommendation has no success notification')
+})
+
+test('actual recommendation origin label distinguishes AI from deliberate rules without claiming fallback', () => {
+  const { descriptor: card } = parse(readFileSync(new URL('../src/components/videoPlanning/StoryboardVideoPlanning.vue', import.meta.url), 'utf8'))
+  const script = compileScript(card, { id: 'planning-card-test' })
+  const declaration = script.scriptSetupAst.find((node) => node.type === 'VariableDeclaration' && node.declarations.some((d) => d.id.name === 'recommendationOrigin'))
+  assert.ok(declaration)
+  const label = new Function('props', 'computed', `${card.scriptSetup.content.slice(declaration.start, declaration.end)}\nreturn recommendationOrigin.value`)
+  for (const [recommendation, expected] of [
+    [{ origin: 'ai' }, 'AI 推荐'], [{ origin: 'llm' }, 'AI 推荐'],
+    [{ origin: 'heuristic' }, '规则推荐'], [{ method: 'heuristic' }, '规则推荐'], [{ strategy: 'heuristic' }, '规则推荐'],
+    [{ origin: 'custom' }, '来源：custom'], [null, ''],
+  ]) assert.equal(label({ item: { recommendation } }, computed), expected)
+})
 
 test('main player keeps explicit adoption and otherwise uses the newest playable generated video', () => {
   const storyboard = { id: 10, video_url: 'https://host/chosen.mp4', local_path: 'images/input.png' }

@@ -10,7 +10,7 @@
     <template v-else>
       <p v-if="error" class="planning-warning" role="alert">{{ error }}</p>
       <p><b>推荐：</b>{{ item?.recommendation?.model_id || '暂无' }} <span v-if="recommendationOrigin">（{{ recommendationOrigin }}）</span></p>
-      <p class="planning-detail">{{ item?.recommendation?.reason || '旧镜头不会自动补写推荐；可点击顶部「更新推荐」或手动选择。' }}</p>
+      <p class="planning-detail">{{ item?.recommendation?.reason || '旧镜头不会自动补写推荐；可在顶部选择 AI 或规则推荐，也可手动选择。' }}</p>
       <p v-if="item?.recommendation" class="planning-detail">推荐来源：{{ sourceLabel(item.recommendation.source_ref) }}</p>
       <p><b>当前选择：</b>{{ item?.choice?.model_id || '未选工作流' }}</p>
       <p class="planning-detail">来源：{{ sourceLabel(item?.choice?.source_ref) }}</p>
@@ -84,7 +84,9 @@ const adoptedVersionMissing = computed(() => props.item?.selected_version_id && 
 const selectedModel = computed(() => props.capabilities.find((c) => c.model_id === props.item?.choice?.model_id))
 const recommendationOrigin = computed(() => {
   const origin = props.item?.recommendation?.origin || props.item?.recommendation?.method || props.item?.recommendation?.strategy
-  return origin === 'ai' || origin === 'llm' ? 'AI 推荐' : origin ? `规则 / 回退：${origin}` : ''
+  if (origin === 'ai' || origin === 'llm') return 'AI 推荐'
+  if (origin === 'heuristic') return '规则推荐'
+  return origin ? `来源：${origin}` : ''
 })
 const editing = ref(false)
 const modelId = ref('')

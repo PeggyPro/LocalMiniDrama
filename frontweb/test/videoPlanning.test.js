@@ -230,6 +230,7 @@ test('HTTP adapter uses only planning endpoints with exact choice, run and adopt
   await api.choice(10, { expected_revision: 7 }); await api.preview({ episode_id: 2, storyboard_ids: [10] })
   await api.run('plan/a', 3); await api.plan('plan/a'); await api.resume('plan/a'); await api.versions(10); await api.adopt(10, { expected_revision: 4, version_id: 'v' })
   assert.ok(requests.every((r) => r[1].startsWith('/video-planning/')))
+  assert.deepEqual(requests[3], ['post', '/video-planning/episodes/2/recommend', { strategy: 'heuristic' }])
   assert.deepEqual(requests[6], ['post', '/video-planning/plans/plan%2Fa/run', { expected_revision: 3 }])
   assert.deepEqual(requests[10], ['put', '/video-planning/storyboards/10/adoption', { expected_revision: 4, version_id: 'v' }])
 })

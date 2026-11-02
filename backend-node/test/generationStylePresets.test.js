@@ -24,3 +24,15 @@ for (const value of EXTRA) {
 test('custom is not a preset', () => {
   assert.equal(resolveStylePreset('custom'), null);
 });
+
+test('historical style stays scene-neutral and matches the frontend preset', async () => {
+  const { findStyleOption } = await import('../../frontweb/src/constants/styleOptions.js');
+  const preset = resolveStylePreset('historical');
+  const option = findStyleOption('historical');
+  assert.equal(preset.zh, option.prompt);
+  assert.equal(preset.en, option.promptEn);
+  assert.match(preset.en, /Chinese historical drama/);
+  assert.doesNotMatch(preset.en, /imperial palace|classical garden|rich warm color grading/i);
+  assert.doesNotMatch(preset.zh, /皇宫殿宇|古典园林|浓郁暖调/);
+  assert.match(preset.en, /follow the described scene and reference images/);
+});

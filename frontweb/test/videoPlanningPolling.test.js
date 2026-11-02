@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { effectScope, nextTick, ref } from 'vue'
 import { useVideoPlanning } from '../src/components/videoPlanning/useVideoPlanning.js'
+import { createVideoPlanningAPI } from '../src/api/videoPlanningClient.js'
 import { activeExecution, executionLabel } from '../src/utils/videoPlanning.js'
 
 const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r }); return { promise, resolve } }
@@ -27,6 +28,46 @@ function mount(t, overrides = {}) {
   t.after(() => scope.stop())
   return { ui, calls, episodeId, scope, setItem: (value) => { item = value } }
 }
+
+test('recommendation strategies reach HTTP only on request; loading and polling stay read-only', async (t) => {
+  const posts = []
+  const item = { ...shot(null), choice: { model_id: 'h3-standard', revision: 7, manual_locked: true } }
+  let rejectAI = false
+  const f = mount(t, createVideoPlanningAPI({
+    get: async (url) => {
+      if (url.endsWith('/capabilities')) return { items: [] }
+      if (url.endsWith('/sources')) return { versions: [], storyboards: [] }
+      return { items: [structuredClone(item)] }
+    },
+    post: async (url, body) => {
+      posts.push([url, body])
+      if (rejectAI && body.strategy === 'ai') throw new Error('AI unavailable')
+      return { items: [structuredClone(item)] }
+    },
+  }))
+  await flush()
+  assert.equal(f.ui.state.loaded, true)
+  t.mock.timers.tick(15000); await flush()
+  assert.deepEqual(posts, [], 'initial loading and background polling never request recommendations')
+
+  await f.ui.recommend('ai')
+  await f.ui.recommend('heuristic')
+  await f.ui.recommend()
+  assert.deepEqual(posts, [
+    ['/video-planning/episodes/1/recommend', { strategy: 'ai' }],
+    ['/video-planning/episodes/1/recommend', { strategy: 'heuristic' }],
+    ['/video-planning/episodes/1/recommend', { strategy: 'heuristic' }],
+  ])
+  assert.deepEqual(f.ui.state.items[10].choice, item.choice)
+  assert.equal(f.ui.state.items[10].selected_version_id, 'old-adopted')
+
+  rejectAI = true
+  assert.equal(await f.ui.recommend('ai'), null)
+  t.mock.timers.tick(15000); await flush()
+  assert.deepEqual(posts.slice(3), [['/video-planning/episodes/1/recommend', { strategy: 'ai' }]], 'an AI failure never triggers heuristic fallback or retry')
+  assert.deepEqual(f.ui.state.items[10].choice, item.choice)
+  assert.equal(f.ui.state.items[10].selected_version_id, 'old-adopted')
+})
 
 test('restored execution keeps polling with dialog closed, stops spinner on completion without adoption', async (t) => {
   const f = mount(t)

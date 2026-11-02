@@ -1,3 +1,5 @@
+const { DEFAULT_LINE3 } = require('./universalOmniMultiBeatFormat');
+
 /**
  * 全能片段（Omni / Seedance 多图参考）用户消息构建：供「生成」与「润色」共用。
  * @param {import('better-sqlite3').Database} db
@@ -278,7 +280,7 @@ function buildUniversalSegmentUserPromptBundle(db, sbId, reqBody, opts = {}) {
     ].join('\n');
     line3Required =
       slots[0].kind === '场景'
-        ? '环境、光影与陈设定性参考 @图片1。若 @图片1 为宫格或多画面拼图，禁止成片复刻其分格或并列布局，仅提取统一的室内空间与光线语义；须单镜头完整连续画面。'
+        ? DEFAULT_LINE3
         : '本片段以首张参考图 @图片1 作为画面锚点展开。';
   }
 

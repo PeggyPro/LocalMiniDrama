@@ -5,7 +5,7 @@ export function createVideoPlanningAPI(request) {
   return {
     capabilities: () => request.get(`${root}/capabilities`),
     episode: (episodeId) => request.get(`${root}/episodes/${id(episodeId)}`),
-    recommend: (episodeId) => request.post(`${root}/episodes/${id(episodeId)}/recommend`, {}),
+    recommend: (episodeId, strategy = 'heuristic') => request.post(`${root}/episodes/${id(episodeId)}/recommend`, { strategy }),
     choice: (storyboardId, body) => request.put(`${root}/storyboards/${id(storyboardId)}/choice`, body),
     sources: (dramaId) => request.get(`${root}/sources`, { params: { drama_id: dramaId } }),
     preview: (body) => request.post(`${root}/plans/preview`, body),

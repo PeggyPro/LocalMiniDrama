@@ -72,7 +72,7 @@ export function useVideoPlanning({ api, episodeId, dramaId, notify, onAdopted })
   onScopeDispose(() => { disposed = true; epoch++; stopPoll(); controller.setScope({}) })
   return {
     state, controller, safe, refresh,
-    recommend: () => safe(() => controller.recommend()),
+    recommend: (strategy = 'heuristic') => safe(() => controller.recommend(strategy)),
     saveChoice: (id, body) => safe(() => controller.choice(id, body)),
     openPlan: (id) => safe(() => controller.openPlan(id)),
     refreshPlan: async () => {
