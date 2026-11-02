@@ -39,6 +39,7 @@ function fixture(t) {
     INSERT INTO dramas(id,title) VALUES(1,'本剧');
     INSERT INTO episodes(id,drama_id,title,script_content) VALUES(1,1,'本集','人在门口等待。'),(2,1,'下一集','人在门口继续等待。');
   `);
+  require('./helpers/videoConfigs').seedVideoConfigs(db);
   planning.ensureVideoPlanningSchema(db);
   return db;
 }
@@ -272,4 +273,17 @@ test('legacy route rejects long-stage aliases and wrong-drama targets before any
   assert.throws(() => guard.assertLegacyGenerationAllowed(db, 9, 'h3-long-drama-first', 1), { code: 'VIDEO_PLAN_REQUIRED' });
   assert.throws(() => guard.assertLegacyGenerationAllowed(db, 9, 'h3-drama', 2), { code: 'STORYBOARD_OWNERSHIP_MISMATCH' });
   assert.throws(() => guard.assertLegacyGenerationAllowed(db, 999, 'h3-drama', 1), { code: 'STORYBOARD_NOT_ACTIVE' });
+});
+
+test('storyboard generation keeps text but blocks recommendations for models without enabled configurations', async t => {
+  const db = fixture(t);
+  db.exec('UPDATE ai_service_configs SET is_active=0');
+  const task = await generate(t, db, JSON.stringify([shot()]), args => {
+    assert.match(args[3], /工作流：\[\]/);
+  });
+  assert.equal(task.status, 'completed', task.error);
+  const row = JSON.parse(task.result).storyboards[0];
+  assert.equal(row.title, '等待');
+  assert.equal(row.video_plan.choice, null);
+  assert.ok(row.video_plan.recommendation.blocking_reasons.includes('model_not_configured'));
 });

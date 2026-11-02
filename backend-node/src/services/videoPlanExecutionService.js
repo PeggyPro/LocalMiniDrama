@@ -5,8 +5,7 @@ const { createExecutionMedia } = require('./videoExecutionMedia');
 const { artifactEligibility } = require('./videoExecutionLatent');
 const catalog = require('./videoWorkflowCatalog');
 const planning = require('./videoPlanningService');
-const { flattenModelIds } = require('./modelId');
-const { isNativeComfyUIConfig } = require('./comfyUIVideoClient');
+const { chooseVideoConnection } = require('./videoConfiguredWorkflows');
 
 const json = (value, fallback = null) => { try { return value == null ? fallback : JSON.parse(value); } catch (_) { return fallback; } };
 const now = () => new Date().toISOString();
@@ -110,12 +109,6 @@ function freezeInputs(row, input = {}) {
   if (out.reference_image_urls != null && (!Array.isArray(out.reference_image_urls) || out.reference_image_urls.length > 9 || out.reference_image_urls.some(url => typeof url !== 'string' || !url))) fail(400, 'invalid_reference_images');
   return JSON.parse(JSON.stringify(out));
 }
-function chooseConfig(db, configId, model) {
-  if (!table(db, 'ai_service_configs')) return null;
-  const rows = db.prepare("SELECT * FROM ai_service_configs WHERE service_type='video'").all().filter(c => !c.deleted_at && c.is_active && isNativeComfyUIConfig(c));
-  if (configId != null) return rows.find(c => c.id === Number(configId)) || null;
-  return rows.sort((a, b) => (Number(flattenModelIds(b.model).includes(model)) - Number(flattenModelIds(a.model).includes(model))) || (b.is_default - a.is_default) || (b.priority - a.priority) || (a.id - b.id))[0] || null;
-}
 function sourceReasons(source, target) {
   if (!source) return ['source_not_completed'];
   const reasons = artifactEligibility(source.latent_artifact, source);
@@ -167,7 +160,7 @@ function createVideoPlanExecutionService({ provider = createExecutionProvider(),
       reasons.push(...(workflow.blocking_reasons || []));
       if (workflow.application_supported === false || workflow.input_supported === false) reasons.push('workflow_inputs_unsupported');
       let connection = {};
-      try { connection = (provider.snapshotConnection || snapshotConnection)(chooseConfig(db, body.config_id, model), cfg); }
+      try { connection = (provider.snapshotConnection || snapshotConnection)(chooseVideoConnection(db, model, body.config_id), cfg); }
       catch (_) { reasons.push('native_connection_not_configured'); }
       return { id: randomUUID(), plan_id: planId, position, storyboard_id: row.id, model_id: model,
         choice_revision: p?.choice_revision || 0, content_fingerprint: planning.getStoryboardContentFingerprint(db, row.id),

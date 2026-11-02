@@ -13,6 +13,7 @@ function fixture(t) {
     INSERT INTO episodes VALUES(1,10,NULL),(2,10,NULL),(3,20,NULL);
     INSERT INTO storyboards VALUES(1,1,1,'A','first','first',5,NULL),(2,1,2,'B','second','second',5,NULL),(3,2,1,'C','cross episode','cross episode',5,NULL),(4,3,1,'D','other drama','other drama',5,NULL);
     INSERT INTO ai_service_configs VALUES(1,'video','comfyui','comfyui','http://original:8188','original-secret','["h3-long-drama-first"]','h3-long-drama-first','{}',1,1,0,NULL);`);
+  db.prepare('UPDATE ai_service_configs SET model=?').run(JSON.stringify(require('./helpers/videoConfigs').commonModels));
   planning.ensureVideoPlanningSchema(db); execution.ensureVideoExecutionSchema(db);
   t.after(() => db.close());
   return db;
@@ -306,4 +307,42 @@ test('read getters on legacy database never migrate or infer completed-video lat
   assert.deepEqual(execution.listVersions(db, 1), { items: [] }); assert.equal(execution.getPlan(db, 'missing'), null);
   assert.deepEqual(execution.listSources(db, 1), { storyboards: [], versions: [] });
   assert.equal(db.prepare("SELECT COUNT(*) n FROM sqlite_master WHERE type='table'").get().n, 0);
+});
+
+test('preview selects each configured model connection and refuses unrelated defaults or explicit mismatches', async t => {
+  const db = fixture(t);
+  db.exec(`UPDATE ai_service_configs SET model='["h3-standard"]',default_model='h3-standard';
+    INSERT INTO ai_service_configs(id,service_type,provider,api_protocol,base_url,model,is_active,is_default,priority)
+    VALUES(2,'video','comfyui','comfyui','http://drama:8188','["h3-drama"]',1,0,11),
+          (3,'video','comfyui','comfyui','http://action:8188','["h3-action"]',1,0,14);`);
+  choose(db, 1, 'h3-drama');
+  choose(db, 2, 'h3-action');
+  const { service, calls } = adapters(db);
+  const plan = await preview(service, db, [1, 2]);
+  const frozen = db.prepare('SELECT storyboard_id,connection_snapshot FROM video_execution_nodes WHERE plan_id=? ORDER BY storyboard_id').all(plan.id);
+  assert.deepEqual(frozen.map(row => JSON.parse(row.connection_snapshot).config_id), [2, 3]);
+  assert.ok(plan.nodes.every(node => !node.blocking_reasons.length));
+  const explicitMismatch = await preview(service, db, [1], { config_id: 1 });
+  assert.ok(explicitMismatch.nodes[0].blocking_reasons.includes('native_connection_not_configured'));
+  db.exec('UPDATE ai_service_configs SET is_active=0 WHERE id=2');
+  const unavailable = await preview(service, db, [1]);
+  assert.ok(unavailable.nodes[0].blocking_reasons.includes('native_connection_not_configured'));
+  assert.equal(calls.submit.length, 0);
+  assert.equal(calls.preflight.length, 0);
+});
+
+test('separate first/continue configs on the same ComfyUI retain a shared latent identity', async t => {
+  const db = fixture(t);
+  db.exec(`UPDATE ai_service_configs SET model='["h3-long-drama-first"]';
+    INSERT INTO ai_service_configs(id,service_type,provider,api_protocol,base_url,model,is_active,is_default,priority)
+    VALUES(2,'video','comfyui','comfyui','http://original:8188','["h3-long-drama-continue"]',1,0,13);`);
+  choose(db, 1);
+  choose(db, 2, 'h3-long-drama-continue', { kind: 'storyboard', storyboard_id: 1, choice_revision: 1 });
+  const { service, calls } = adapters(db);
+  const result = await run(service, db, await preview(service, db, [1, 2]));
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(calls.submit.map(call => call.connection.config_id), [1, 2]);
+  assert.equal(calls.submit[0].connection.identity, calls.submit[1].connection.identity);
+  assert.equal(calls.preflight[1].source.iteration, 0);
+  assert.equal(db.prepare('SELECT iteration FROM video_segments WHERE storyboard_id=2').get().iteration, 1);
 });

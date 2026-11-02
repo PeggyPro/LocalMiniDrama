@@ -2,6 +2,9 @@
 
 const { createHash, randomUUID } = require('node:crypto');
 const catalog = require('./videoWorkflowCatalog');
+const policy = require('./videoRecommendationPolicy');
+const { getConfiguredVideoWorkflows } = require('./videoConfiguredWorkflows');
+const { hasCutInstructions } = policy;
 
 function planningError(statusCode, code, message, details) {
   const error = new Error(message);
@@ -143,12 +146,6 @@ function versionEligibility(db, row, options = {}) {
   }
 }
 function validation(state, reasons = []) { return { state, blocking_reasons: [...new Set(reasons)] }; }
-function hasCutInstructions(row) {
-  const prompt = [row.video_prompt, row.universal_segment_text].filter(Boolean).join(' ')
-    .replace(/(?:不得|不要|不能|禁止|避免|没有|无|不)(?:任何)?(?:切镜|切换镜头|镜头切换|剪辑|转场|跳切)/g, '')
-    .replace(/\b(?:no|without|avoid)\s+(?:cuts?|cutting|montage|jump cuts?|transitions?)\b/gi, '');
-  return /切镜|切换镜头|镜头切换|多镜头|蒙太奇|剪辑|转场|跳切|切至|\bcut\s+to\b|\bjump\s+cut\b|\bmontage\b|\bscene\s+cuts?\b|<cut>|\[cut\]/i.test(prompt);
-}
 
 function validateVideoChoice(db, id, choice, options = {}) {
   const target = getStoryboard(db, id);
@@ -339,31 +336,51 @@ function getPlanningPromptContext(db, episodeId, options = {}) {
   const episode = getEpisode(db, episodeId);
   const all = listPlanningSources(db, episode.drama_id, options);
   const maxSources = Math.min(64, Math.max(0, Number.isFinite(options.max_sources) ? Math.floor(options.max_sources) : 32));
-  const candidates = [...all.versions, ...all.storyboards].filter((item) => item.eligible).slice(0, maxSources);
+  const batchIds = new Set(options.target_storyboard_ids || []);
+  // This batch changes unlocked choice revisions. Its sources must use draft_shot,
+  // never the old source_key snapshot (completed versions remain immutable).
+  const candidates = [...all.versions, ...all.storyboards].filter((item) => item.eligible &&
+    !(item.source_ref.kind === 'storyboard' && batchIds.has(item.storyboard_id))).slice(0, maxSources);
   const source_keys = Object.create(null);
   const source_fingerprints = Object.create(null);
   const allowed_sources = candidates.map((item) => {
     const key = 'source_' + createHash('sha256').update(JSON.stringify(item.source_ref)).digest('hex').slice(0, 20);
     source_keys[key] = item.source_ref;
     if (item.content_fingerprint) source_fingerprints[key] = item.content_fingerprint;
-    return { key, model_id: item.model_id, episode_id: item.episode_id, storyboard_number: item.storyboard_number,
-      label: String(item.title || item.version_id || '').slice(0, 100), kind: item.source_ref.kind };
+    const board = getStoryboard(db, item.storyboard_id);
+    const isVersion = item.source_ref.kind === 'version';
+    const frozen = isVersion && hasTable(db, 'video_execution_nodes')
+      ? json(db.prepare('SELECT inputs FROM video_execution_nodes WHERE version_id = ?').get(item.version_id)?.inputs) : null;
+    return { key, model_id: item.model_id, continuation_model: catalog.getVideoWorkflow(item.model_id)?.continuation_model,
+      episode_id: item.episode_id, storyboard_number: board.storyboard_number,
+      label: String(board.title || '').slice(0, 100), kind: item.source_ref.kind,
+      current_storyboard_context: isVersion ? undefined : policy.storyboardPromptDetails(board, 600),
+      frozen_prompt: isVersion ? String(frozen?.prompt || '').slice(0, 2400) : undefined,
+      frozen_prompt_truncated: isVersion ? String(frozen?.prompt || '').length > 2400 : undefined,
+      context_note: isVersion ? (frozen?.prompt ? '历史版本冻结提示词，不代表末帧视觉已验收' : '历史版本画面上下文未知，不能用当前分镜文案代替') : '计划分镜文案，尚待来源执行验证',
+      execution_requirement: isVersion ? '执行前重新验证该精确版本的 latent 与连接' : '来源须纳入同集执行计划；跨集来源须先完成，再选择精确版本',
+      manual_locked: isVersion ? undefined : !!planRow(db, board.id)?.manual_locked };
   });
   const capabilities = catalog.getVideoWorkflowCatalog();
-  const allowedModels = capabilities.items.filter((item) => item.recommendable).map((item) => ({
+  const allowedModels = getConfiguredVideoWorkflows(db).map((item) => ({
     model_id: item.model_id, label: item.label, stage: item.stage, continuation_model: item.continuation_model,
+    configured_connections: item.configured_connections,
+    requires_latent: item.requires_latent, produces_latent: item.produces_latent, usage: policy.workflowGuidance(item.model_id),
   }));
   const instruction = [
     '视频规划：在每个分镜对象内添加 video_recommendation:{model_id,reason,continuous_shot?:boolean,predecessor?}，不要另建独立推荐数组。每一镜都必须有推荐。',
     'model_id 只能选下面目录的规范 ID。single/first 不填 predecessor。continue 必须指定 predecessor 且 continuous_shot:true。',
-    '续集、同角色、同地点、相近剧情或长时长不等于连续镜头；只有本镜明确从来源末帧连续拍摄、无切镜时才可选 continue。切镜、转场、蒙太奇应选独立 single/first。',
-    'continue 的 video_prompt 必须描述连续动作，不得同时要求切镜/剪辑/镜头切换。引用本次较早分镜作为来源时，来源应使用与续接模型配对的 first，以保存 latent。',
+    policy.RECOMMENDATION_INSTRUCTION,
+    '候选仅含用户在 AI 配置中已启用、类型为视频且系统支持的原生工作流。默认配置和优先级仅用于同一模型的连接选择，不决定本镜用标准/文戏/武戏。不得选目录外模型，或因续拍而升级到未配置的 first。',
+    '若目录为空或无合适模型，video_recommendation 的 model_id 填 null，在 reason 说明需补充视频配置，不编造可执行推荐。',
+    'continue 的视频正文必须描述连续动作，不得同时要求切镜/剪辑/镜头切换。引用本次较早分镜作为来源时，来源应使用与续接模型配对的 first/continue，以保存 latent。',
     '来源仅可为 {kind:"source_key",key:"下列允许key"}，或本次完整分镜列表中严格较早镜号 {kind:"draft_shot",shot_number:1}。',
     '不得输出数据库 ID、版本 ID、视频 URL、latent 路径、iteration 或执行参数。目录只代表注册，未证明 GPU 可用。',
     `工作流：${JSON.stringify(allowedModels)}`,
     `允许的既有来源：${JSON.stringify(allowed_sources)}`,
   ].join('\n');
   return { instruction, source_keys, source_fingerprints, allowed_sources, episode_id: episode.id, drama_id: episode.drama_id,
+    allowed_model_ids: allowedModels.map(item => item.model_id),
     capabilities_version: capabilities.version, generation_run_id: options.generation_run_id || null };
 }
 
@@ -394,7 +411,7 @@ function mapSavedStoryboards(db, episodeId, raw, options) {
   });
   return { mapped, byNumber };
 }
-function resolveRecommendation(db, item, context, byNumber, plannedRevisions, options) {
+function resolveRecommendation(db, item, context, byNumber, plannedRevisions, options, allowedModels) {
   const raw = item.raw.video_recommendation;
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {
     model_id: null, reason: '本次生成未提供视频推荐', predecessor: null, source_ref: null,
@@ -403,6 +420,7 @@ function resolveRecommendation(db, item, context, byNumber, plannedRevisions, op
   const model = catalog.getVideoWorkflow(raw.model_id);
   const reasons = [];
   if (!model || raw.model_id !== model.model_id) reasons.push('unknown_model');
+  if (!allowedModels.has(model?.model_id)) reasons.push('model_not_configured');
   if (Object.keys(raw).some((key) => !['model_id', 'reason', 'predecessor', 'continuous_shot'].includes(key))) reasons.push('untrusted_recommendation_fields');
   if (model?.requires_latent && raw.continuous_shot !== true) reasons.push('continuation_intent_required');
   if (model?.requires_latent && hasCutInstructions(item.row)) reasons.push('continuation_prompt_contains_cuts');
@@ -430,9 +448,11 @@ function resolveRecommendation(db, item, context, byNumber, plannedRevisions, op
       : predecessor?.kind === 'source_key' ? { kind: 'source_key', key: String(predecessor.key || '').slice(0, 100) } : null,
     source_ref: source, continuous_shot: raw.continuous_shot === true, origin: options.origin || 'ai', blocking_reasons: [...new Set(reasons)] };
 }
-function upgradeDraftPredecessors(db, recommendations) {
+function upgradeDraftPredecessors(db, recommendations, allowedModels) {
   const dependents = new Map();
   for (const [id, rec] of recommendations) {
+    // A locked child's suggestion will not activate; it must not change an unlocked parent.
+    if (planRow(db, id)?.manual_locked) continue;
     if (rec.predecessor?.kind !== 'draft_shot' || rec.source_ref?.kind !== 'storyboard' || rec.blocking_reasons.length) continue;
     const sourceId = rec.source_ref.storyboard_id;
     if (!dependents.has(sourceId)) dependents.set(sourceId, []);
@@ -457,6 +477,18 @@ function upgradeDraftPredecessors(db, recommendations) {
     const first = catalog.getVideoWorkflowCatalog().items.find((model) => model.stage === 'first' && model.input_supported &&
       !model.blocking_reasons.length && model.continuation_model === requested[0]);
     if (!first) continue;
+    if (!allowedModels.has(first.model_id)) {
+      for (const { rec } of children) rec.blocking_reasons.push('source_model_not_configured');
+      continue;
+    }
+    // A reverse upgrade may add latent output, but cannot silently change the
+    // selected dramatic/action treatment. Mixed chains need an explicit plan.
+    const pairedFirst = { 'h3-drama': 'h3-long-drama-first', 'h3-action': 'h3-long-action-first' }[parentRec.model_id];
+    if ((pairedFirst && first.model_id !== pairedFirst) ||
+        (parentRec.model_id === 'h3-standard' && !['h3-long-drama-first', 'h3-long-action-first'].includes(first.model_id))) {
+      for (const { rec } of children) rec.blocking_reasons.push('source_model_incompatible');
+      continue;
+    }
     parentRec.upgraded_from_model_id = parentRec.model_id;
     parentRec.model_id = first.model_id;
     parentRec.reason = `${parentRec.reason}；为后续明确连续镜头升级为可保存 latent 的配对首段`.slice(0, 1000);
@@ -495,8 +527,13 @@ function applyStoryboardRecommendations(db, episodeId, rawStoryboards, options =
     }
     // Sorting only controls dependency validation; the ID mapping above never depends on ordering.
     mapped.sort((a, b) => (a.number || 0) - (b.number || 0));
-    const recommendations = new Map(mapped.map((item) => [item.row.id, resolveRecommendation(db, item, sourceContext, byNumber, plannedRevisions, options)]));
-    upgradeDraftPredecessors(db, recommendations);
+    const allowedModels = new Set(getConfiguredVideoWorkflows(db).map(item => item.model_id)
+      .filter(id => !sourceContext?.allowed_model_ids || sourceContext.allowed_model_ids.includes(id)));
+    const recommendations = new Map(mapped.map((item) => [item.row.id, resolveRecommendation(db, item, sourceContext, byNumber, plannedRevisions, options, allowedModels)]));
+    upgradeDraftPredecessors(db, recommendations, allowedModels);
+    if (options.preserve_on_invalid_config && [...recommendations.values()].some(rec => rec.blocking_reasons.some(reason => ['model_not_configured', 'source_model_not_configured'].includes(reason)))) {
+      throw planningError(409, 'VIDEO_MODEL_NOT_CONFIGURED', '推荐涉及未启用或未配置的视频模型（含配对首段）；已保留原方案，请检查 AI 配置后重新推荐');
+    }
     for (const item of mapped) {
       const recommendation = recommendations.get(item.row.id);
       const existing = planRow(db, item.row.id);
@@ -522,13 +559,6 @@ function applyStoryboardRecommendations(db, episodeId, rawStoryboards, options =
   })();
 }
 
-function heuristicRecommendation(row) {
-  const text = [row.title, row.description, row.action, row.video_prompt, row.universal_segment_text].filter(Boolean).join(' ');
-  const action = /打斗|追逐|武打|战斗|搏斗|fight|combat|chase/i.test(text);
-  const long = Number(row.duration) > 12;
-  return { model_id: long ? (action ? 'h3-long-action-first' : 'h3-long-drama-first') : (action ? 'h3-action' : 'h3-drama'),
-    reason: `规则推荐（非 AI）：${action ? '动作场景' : '叙事场景'}${long ? '，长镜使用可续接首段' : '，使用单段工作流'}；未执行 GPU 验证` };
-}
 async function recommendEpisodeVideoPlans(db, cfg, log, episodeId, body = {}, options = {}) {
   requireSchema(db);
   const all = episodeStoryboards(db, episodeId);
@@ -543,17 +573,26 @@ async function recommendEpisodeVideoPlans(db, cfg, log, episodeId, body = {}, op
   if (rows.length > 100) throw planningError(400, 'RECOMMENDATION_LIMIT', '请分批重推荐，每次最多 100 镜');
   const strategy = body.strategy || 'heuristic';
   if (!['ai', 'heuristic'].includes(strategy)) throw planningError(400, 'INVALID_STRATEGY', 'strategy 必须为 ai 或 heuristic');
-  const context = getPlanningPromptContext(db, episodeId, options);
+  const context = getPlanningPromptContext(db, episodeId, { ...options, target_storyboard_ids: rows.map((row) => row.id) });
+  if (!context.allowed_model_ids.length) throw planningError(400, 'NO_CONFIGURED_VIDEO_MODELS', '请先在 AI 配置中启用受支持的视频模型；已保留原方案');
+  const choices = new Map(rows.map((row) => {
+    const dto = getStoryboardVideoPlan(db, row.id, options);
+    return [row.id, { model_id: dto.choice?.model_id || null, manual_locked: !!dto.choice?.manual_locked,
+      validation_state: dto.validation.state, has_source: !!dto.choice?.source_ref }];
+  }));
   const expected_fingerprints = Object.fromEntries(rows.map((row) => [row.id, getStoryboardContentFingerprint(db, row.id)]));
   const expected_choice_revisions = Object.fromEntries(rows.map((row) => [row.id, planRow(db, row.id)?.choice_revision || 0]));
   const expected_recommendation_revisions = Object.fromEntries(rows.map((row) => [row.id, planRow(db, row.id)?.recommendation_revision || 0]));
-  let raw = rows.map((row) => ({ id: row.id, shot_number: row.storyboard_number, video_recommendation: heuristicRecommendation(row) }));
+  let raw;
+  if (strategy === 'heuristic') {
+    const recommendations = policy.heuristicRecommendations(rows, choices, new Set(context.allowed_model_ids));
+    raw = rows.map((row, index) => ({ id: row.id, shot_number: row.storyboard_number, video_recommendation: recommendations[index] }));
+  }
   if (strategy === 'ai') {
     // The only network entry in this module is this explicit user endpoint path. Hooks and reads are pure local operations.
     const generate = options.generateText || require('./aiClient').generateText;
-    const prompt = JSON.stringify({ storyboards: rows.map((row) => ({ shot_number: row.storyboard_number,
-      title: String(row.title || '').slice(0, 200), description: String(row.description || '').slice(0, 1800),
-      action: String(row.action || '').slice(0, 1000), video_prompt: String(row.video_prompt || '').slice(0, 1800), duration: row.duration })) });
+    const prompt = JSON.stringify({ storyboards: rows.map((row) => ({ ...policy.storyboardPromptDetails(row),
+      current_choice: choices.get(row.id) })) });
     const output = await generate(db, log, 'text', prompt, context.instruction + '\n仅返回完整 JSON 对象 {"storyboards":[{"shot_number":1,"video_recommendation":{...}}]}，不修改镜号。',
       { model: body.model || undefined, temperature: 0.2, max_tokens: 8192, scene_key: 'storyboard_extraction' });
     const text = typeof output === 'string' ? output : output?.content;
@@ -566,7 +605,7 @@ async function recommendEpisodeVideoPlans(db, cfg, log, episodeId, body = {}, op
     raw = parsed.storyboards;
   }
   return applyStoryboardRecommendations(db, episodeId, raw, { ...options, phase: 'final', origin: strategy,
-    source_context: context, saved_storyboards: rows, generation_run_id: randomUUID(), expected_fingerprints, expected_choice_revisions, expected_recommendation_revisions });
+    source_context: context, preserve_on_invalid_config: true, saved_storyboards: rows, generation_run_id: randomUUID(), expected_fingerprints, expected_choice_revisions, expected_recommendation_revisions });
 }
 
 module.exports = { ensureVideoPlanningSchema, getStoryboardVideoPlan, getEpisodeVideoPlans, setVideoChoice,

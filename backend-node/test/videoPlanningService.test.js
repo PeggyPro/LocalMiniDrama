@@ -18,6 +18,7 @@ function createDb(t, schema = true) {
     INSERT INTO storyboards (id,episode_id,storyboard_number,title,duration) VALUES
       (101,10,1,'第一镜',8),(102,10,2,'追逐战斗',15),(103,10,3,'第三镜',5),
       (111,11,1,'跨集来源',8),(112,11,2,'跨集后继',8),(201,20,1,'其他项目',8);`);
+  require('./helpers/videoConfigs').seedVideoConfigs(db);
   if (schema) planning.ensureVideoPlanningSchema(db);
   return db;
 }
@@ -201,7 +202,7 @@ test('same-ID recommendation defaults to labeled heuristic, preserving adopted v
   assert.equal(calls, 0);
   assert.equal(output.items.length, 3);
   assert.equal(output.items[0].recommendation.origin, 'heuristic');
-  assert.equal(output.items[1].recommendation.model_id, 'h3-long-action-first');
+  assert.equal(output.items[1].recommendation.model_id, 'h3-action', 'duration alone does not imply a future continuation');
   assert.equal(output.items[0].choice.model_id, 'h3-standard');
   assert.equal(output.items[0].selected_version_id, 'chosen');
   assert.deepEqual(db.prepare('SELECT * FROM storyboards ORDER BY id').all(), before);
