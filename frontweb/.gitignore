@@ -5,3 +5,4 @@ data/
 .env
 config.yaml
 !config.example.yaml
+false

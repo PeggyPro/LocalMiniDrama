@@ -188,7 +188,7 @@
 
 ### 方式二：源码开发
 
-> Node.js ≥ 18
+> 源码开发支持 Node.js 22.22.0 至 26.x。使用 pnpm 开发的命令见 [运行说明](README_RUN.md)。
 
 ```bash
 git clone https://github.com/xuanyustudio/LocalMiniDrama.git

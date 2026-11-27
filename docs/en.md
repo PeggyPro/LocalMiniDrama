@@ -102,7 +102,7 @@ Double-click → open **AI Config** → enter your API key → start creating.
 
 ### Option B — Development Mode
 
-> Requires Node.js >= 18
+> Local development supports Node.js 22.22.0 through 26.x.
 
 ```bash
 # 1. Clone
